@@ -12,36 +12,35 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-#pragma once
-#include <iostream>
-#include <cstdio>
-#include <cuda.h>
+ #pragma once
+ #include <iostream>
+ #include <cstdio>
+ #include <cuda.h>
 using namespace std;
 
-namespace PrintFunctions{
-  template<typename T>
-  void printArray(T *h_vec,uint size){
+namespace PrintFunctions {
+template <typename T>
+void printArray(T *h_vec, uint size) {
     printf("\n");
-    for(int i = 0; i < size; i++){
-      std::cout <<h_vec[i] << "\n";
+    for (int i = 0; i < size; i++) {
+        std::cout << h_vec[i] << "\n";
     }
     printf("\n");
-  }
-  
-  void printArray(char **h_vec,uint size){
-    printf("\n");
-    for(int i = 0; i < size; i++){
-      printf("%d-%s\n",i, h_vec[i]);
-    }
-    printf("\n");
-  }
+}
 
-  template<typename T>
-  void printCudaArray(T *d_vec,uint size){
-    T* h_vec = (T *) std::malloc(size * sizeof(T));
-    cudaMemcpy(h_vec, d_vec, size*sizeof(T), cudaMemcpyDeviceToHost);
+void printArray(char **h_vec, uint size) {
+    printf("\n");
+    for (int i = 0; i < size; i++) {
+        printf("%d-%s\n", i, h_vec[i]);
+    }
+    printf("\n");
+}
+
+template <typename T>
+void printCudaArray(T *d_vec, uint size) {
+    T *h_vec = (T *)std::malloc(size * sizeof(T));
+    cudaMemcpy(h_vec, d_vec, size * sizeof(T), cudaMemcpyDeviceToHost);
     printArray(h_vec, size);
     free(h_vec);
-  }
-}//end namespace 
-
+}
+}  // namespace PrintFunctions
