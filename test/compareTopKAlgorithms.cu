@@ -104,8 +104,9 @@ void compareAlgorithms(uint size, uint k, uint numTests, uint* algorithmsToTest,
         // copy the vector to d_vec_copy, which will be used to restore it later
         cudaMemcpy(d_vec_copy, d_vec, size * sizeof(KeyT), cudaMemcpyDeviceToDevice);
 
-        uint* h_vec = new uint[size];
-        cudaMemcpy(h_vec, d_vec, size * sizeof(KeyT), cudaMemcpyDeviceToHost);
+        // <ERROR>: h_vec 的类型应该是 KeyT 才对
+        // uint* h_vec = new uint[size];
+        // cudaMemcpy(h_vec, d_vec, size * sizeof(KeyT), cudaMemcpyDeviceToHost);
 
         // uint* b = new uint[size];
         // uint* c = new uint[size];
