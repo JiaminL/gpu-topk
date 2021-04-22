@@ -1,6 +1,6 @@
 OS_SIZE = $(shell uname -m | sed -e "s/i.86/32/" -e "s/x86_64/64/")
 
-CUDA_PATH       ?= /usr/local/cuda-10.0
+CUDA_PATH       ?= /usr/local/cuda-10.1
 CUDA_INC_PATH   ?= $(CUDA_PATH)/include
 CUDA_BIN_PATH   ?= $(CUDA_PATH)/bin
 
@@ -13,10 +13,11 @@ endif
 NVCC            ?= $(CUDA_BIN_PATH)/nvcc
 
 # Make sure to choose the right SM for your device
+GENCODE_SM75    := -gencode arch=compute_75,code=sm_75
 GENCODE_SM70    := -gencode arch=compute_70,code=sm_70
 GENCODE_SM50    := -gencode arch=compute_50,code=sm_50
 GENCODE_SM35    := -gencode arch=compute_35,code=sm_35
-GENCODE_FLAGS   := $(GENCODE_SM50)
+GENCODE_FLAGS   := $(GENCODE_SM75)
 
 LDFLAGS   := -lcudart -lrt -lcurand -lm
 CFLAGS := -O3 -lineinfo -Xptxas="-dlcm=ca -v"
