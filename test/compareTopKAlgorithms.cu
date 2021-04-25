@@ -20,6 +20,7 @@
 #include "bitonicTopK.cuh"
 
 #define IS_PRINT_EVERY_TESTING false
+#define IS_PRINT_DIFF true
 
 #define SETUP_TIMING()       \
     cudaEvent_t start, stop; \
@@ -41,11 +42,13 @@
     const char* namesOfTimingFunctions[NUMBEROFALGORITHMS] = {                                     \
         "Sort",                                                                                    \
         "Radix Select",                                                                            \
-        "Bitonic TopK"};                                                                           \
+        "Bitonic TopK",                                                                            \
+    };                                                                                             \
     ptrToTimingFunction arrayOfTimingFunctions[NUMBEROFALGORITHMS] = {                             \
         &sortTopK<KeyT>,                                                                           \
         &radixSelectTopK<KeyT>,                                                                    \
-        &bitonicTopK<KeyT>};
+        &bitonicTopK<KeyT>,                                                                \
+    };
 
 using namespace std;
 
@@ -57,7 +60,7 @@ void compareAlgorithms(uint size, uint k, uint numTests, uint* algorithmsToTest,
     KeyT* d_vec_copy;
     KeyT* d_res;
     float timeArray[NUMBEROFALGORITHMS][numTests];
-    float totalTimesPerAlgorithm[NUMBEROFALGORITHMS];
+    double totalTimesPerAlgorithm[NUMBEROFALGORITHMS];
     float averageTimesPerAlgorithm[NUMBEROFALGORITHMS];
     float minTimesPerAlgorithm[NUMBEROFALGORITHMS];
     float maxTimesPerAlgorithm[NUMBEROFALGORITHMS];
@@ -113,7 +116,7 @@ void compareAlgorithms(uint size, uint k, uint numTests, uint* algorithmsToTest,
 
         curandCreateGenerator(&generator, CURAND_RNG_PSEUDO_DEFAULT);
         curandSetPseudoRandomGeneratorSeed(generator, seed);
-        curandSetPseudoRandomGeneratorSeed(generator, 0);
+        // curandSetPseudoRandomGeneratorSeed(generator, 0);
 
 #if IS_PRINT_EVERY_TESTING
         printf("Running test %u of %u for size: %u and k: %u\n", i + 1, numTests, size, k);
@@ -139,8 +142,16 @@ void compareAlgorithms(uint size, uint k, uint numTests, uint* algorithmsToTest,
             j = runOrder[x];
             if (algorithmsToTest[j]) {
                 // run timing function j
-                usleep(100000);  // sleep 100 ms
                 TIME_FUNC(arrayOfTimingFunctions[j](d_vec_copy, size, k, d_res, g_allocator), runtime);
+                // 我猜测 GPU 释放空间与函数返回是异步的，上一次测试申请的空间还没有释放结束，下一次测试函数就开始了
+                // 由于我的 GPU 显存只有 8GB，如果原始数据大小为 2GB，因为 GPU 没有更多的 2GB 空间用来分配（d_vec_copy, d_vec 已经使用了 4GB）
+                // 下一次测试必须等待，导致除第一个上 GPU 的测试外，其余测试都有 30 ~ 50 ms 不等的延时
+                if (size == (uint)(2 << 30) / sizeof(KeyT)) {         // 2GB
+                    // printf("sleep 100\n");
+                    usleep(100000);                             // sleep 100 ms
+                } else if (size == (uint)(1 << 30) / sizeof(KeyT)) {  // 1GB
+                    usleep(50000);                              // sleep 50 ms
+                }
 #if IS_PRINT_EVERY_TESTING
                 printf("\tTESTING: %-2u %-20s runtime: %f ms\n", j, namesOfTimingFunctions[j], runtime);
 #endif
@@ -179,7 +190,7 @@ void compareAlgorithms(uint size, uint k, uint numTests, uint* algorithmsToTest,
     for (j = 0; j < NUMBEROFALGORITHMS; j++) {
         maxTimesPerAlgorithm[j] = *max_element(timeArray[j], timeArray[j] + numTests);
         minTimesPerAlgorithm[j] = *min_element(timeArray[j], timeArray[j] + numTests);
-        totalTimesPerAlgorithm[j] = accumulate(timeArray[j], timeArray[j] + numTests, 0);
+        totalTimesPerAlgorithm[j] = accumulate(timeArray[j], timeArray[j] + numTests, 0.0);
         // 计算均值
         averageTimesPerAlgorithm[j] = totalTimesPerAlgorithm[j] / numTests;
         // 计算方差
@@ -218,7 +229,7 @@ void compareAlgorithms(uint size, uint k, uint numTests, uint* algorithmsToTest,
         }
     }
     printf("\n");
-
+#if IS_PRINT_DIFF
     if (algorithmsToTest[0]) {
         for (i = 0; i < numTests; i++) {
             for (j = 1; j < NUMBEROFALGORITHMS; j++) {
@@ -240,6 +251,7 @@ void compareAlgorithms(uint size, uint k, uint numTests, uint* algorithmsToTest,
             }
         }
     }
+#endif
 
     // free memory
     for (i = 0; i < numTests; i++)
