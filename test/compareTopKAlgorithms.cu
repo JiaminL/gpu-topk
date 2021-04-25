@@ -10,12 +10,16 @@
 #include <fstream>
 #include <sys/time.h>
 #include <algorithm>
+#include <numeric>
+#include <unistd.h>
 
 #include "printFunctions.cuh"
 #include "generateProblems.cuh"
 #include "sortTopK.cuh"
 #include "radixSelectTopK.cuh"
 #include "bitonicTopK.cuh"
+
+#define IS_PRINT_EVERY_TESTING false
 
 #define SETUP_TIMING()       \
     cudaEvent_t start, stop; \
@@ -31,12 +35,21 @@
         cudaEventElapsedTime(&t, start, stop); \
     }
 
+#define NUMBEROFALGORITHMS 3
+#define INIT_FUNCTIONS()                                                                           \
+    typedef cudaError_t (*ptrToTimingFunction)(KeyT*, uint, uint, KeyT*, CachingDeviceAllocator&); \
+    const char* namesOfTimingFunctions[NUMBEROFALGORITHMS] = {                                     \
+        "Sort",                                                                                    \
+        "Radix Select",                                                                            \
+        "Bitonic TopK"};                                                                           \
+    ptrToTimingFunction arrayOfTimingFunctions[NUMBEROFALGORITHMS] = {                             \
+        &sortTopK<KeyT>,                                                                           \
+        &radixSelectTopK<KeyT>,                                                                    \
+        &bitonicTopK<KeyT>};
+
 using namespace std;
 
 CachingDeviceAllocator g_allocator(true);  // Caching allocator for device memory
-
-#define NUMBEROFALGORITHMS 3
-const char* namesOfTimingFunctions[NUMBEROFALGORITHMS] = {"Sort", "Radix Select", "Bitonic TopK"};
 
 template <typename KeyT>
 void compareAlgorithms(uint size, uint k, uint numTests, uint* algorithmsToTest, uint generateType) {
@@ -45,9 +58,11 @@ void compareAlgorithms(uint size, uint k, uint numTests, uint* algorithmsToTest,
     KeyT* d_res;
     float timeArray[NUMBEROFALGORITHMS][numTests];
     float totalTimesPerAlgorithm[NUMBEROFALGORITHMS];
+    float averageTimesPerAlgorithm[NUMBEROFALGORITHMS];
     float minTimesPerAlgorithm[NUMBEROFALGORITHMS];
+    float maxTimesPerAlgorithm[NUMBEROFALGORITHMS];
+    double standardPerAlgorithm[NUMBEROFALGORITHMS];  // standard deviation 标准差
     KeyT* resultsArray[NUMBEROFALGORITHMS][numTests];
-    std::fill_n(minTimesPerAlgorithm, NUMBEROFALGORITHMS, 2000);
 
     uint winnerArray[numTests];
     uint timesWon[NUMBEROFALGORITHMS];
@@ -58,13 +73,15 @@ void compareAlgorithms(uint size, uint k, uint numTests, uint* algorithmsToTest,
     timeval t1;
     float runtime;
 
+    for (i = 0; i < numTests; i++)
+        for (j = 0; j < NUMBEROFALGORITHMS; j++)
+            resultsArray[j][i] = new KeyT[k];
+
     SETUP_TIMING()
 
-    typedef cudaError_t (*ptrToTimingFunction)(KeyT*, uint, uint, KeyT*, CachingDeviceAllocator&);
     typedef void (*ptrToGeneratingFunction)(KeyT*, uint, curandGenerator_t, CachingDeviceAllocator&);
     // these are the functions that can be called
-    ptrToTimingFunction arrayOfTimingFunctions[NUMBEROFALGORITHMS] = {&sortTopK<KeyT>, &radixSelectTopK<KeyT>, &bitonicTopK<KeyT>};
-    // ptrToTimingFunction arrayOfTimingFunctions[NUMBEROFALGORITHMS] = {NULL, NULL, NULL};
+    INIT_FUNCTIONS()
 
     ptrToGeneratingFunction* arrayOfGenerators;
     const char** namesOfGeneratingFunctions;
@@ -82,7 +99,6 @@ void compareAlgorithms(uint size, uint k, uint numTests, uint* algorithmsToTest,
 
     // create the random generator.
     curandGenerator_t generator;
-    srand(unsigned(time(NULL)));
 
     printf("The distribution is: %s\n", namesOfGeneratingFunctions[generateType]);
     for (i = 0; i < numTests; i++) {
@@ -94,51 +110,27 @@ void compareAlgorithms(uint size, uint k, uint numTests, uint* algorithmsToTest,
             runOrder[m] = m;
         }
         std::random_shuffle(runOrder, runOrder + NUMBEROFALGORITHMS);
+
         curandCreateGenerator(&generator, CURAND_RNG_PSEUDO_DEFAULT);
         curandSetPseudoRandomGeneratorSeed(generator, seed);
         curandSetPseudoRandomGeneratorSeed(generator, 0);
+
+#if IS_PRINT_EVERY_TESTING
         printf("Running test %u of %u for size: %u and k: %u\n", i + 1, numTests, size, k);
+#endif
         // generate the random vector using the specified distribution
         arrayOfGenerators[generateType](d_vec, size, generator, g_allocator);
 
+        // KeyT* h_vec = new KeyT[size];
+        // cudaMemcpy(h_vec, d_vec, size * sizeof(KeyT), cudaMemcpyDeviceToHost);
+        // h_vec[0] = (KeyT)(-1034);
+        // h_vec[1] = (KeyT)(0.5);
+        // h_vec[2] = (KeyT)(1.0);
+        // cudaMemcpy(d_vec, h_vec, size * sizeof(KeyT), cudaMemcpyHostToDevice);
+        // delete[] h_vec;
+
         // copy the vector to d_vec_copy, which will be used to restore it later
         cudaMemcpy(d_vec_copy, d_vec, size * sizeof(KeyT), cudaMemcpyDeviceToDevice);
-
-        // <ERROR>: h_vec 的类型应该是 KeyT 才对
-        // uint* h_vec = new uint[size];
-        // cudaMemcpy(h_vec, d_vec, size * sizeof(KeyT), cudaMemcpyDeviceToHost);
-
-        // uint* b = new uint[size];
-        // uint* c = new uint[size];
-        // uint* d = new uint[size];
-
-        // int x = 0, y = 0, z = 0;
-        // for (int r = 0; r < size; r++) {
-        //     if ((h_vec[r] & 0xff000000) == 0xff000000) {
-        //         b[x] = h_vec[r];
-        //         x += 1;
-        //     }
-        // }
-
-        // for (int i = 0; i < x; i++) {
-        //     if (b[i] & 0x0f00 == 0x0f00) {
-        //         c[y] = b[i];
-        //         y += 1;
-        //     }
-        // }
-
-        // for (int i = 0; i < x; i++) {
-        //     if (b[i] & 0x0f00 == 0x0f00) {
-        //         c[y] = b[i];
-        //         y += 1;
-        //     }
-        // }
-        // std::sort(b, b + x, std::greater<uint>());
-        // cout << "Count " << x << endl;
-        // for (int r = 0; r < k; r++) cout << b[r] << endl;
-
-        // std::sort(h_vec, h_vec + size, std::greater<uint>());
-        // for (int r = 0; r < k; r++) cout << h_vec[r] << endl;
 
         winnerArray[i] = 0;
         float currentWinningTime = INFINITY;
@@ -147,8 +139,11 @@ void compareAlgorithms(uint size, uint k, uint numTests, uint* algorithmsToTest,
             j = runOrder[x];
             if (algorithmsToTest[j]) {
                 // run timing function j
-                printf("TESTING: %u %s\n", j, namesOfTimingFunctions[j]);
+                usleep(100000);  // sleep 100 ms
                 TIME_FUNC(arrayOfTimingFunctions[j](d_vec_copy, size, k, d_res, g_allocator), runtime);
+#if IS_PRINT_EVERY_TESTING
+                printf("\tTESTING: %-2u %-20s runtime: %f ms\n", j, namesOfTimingFunctions[j], runtime);
+#endif
 
                 // check for error
                 cudaError_t error = cudaGetLastError();
@@ -161,12 +156,10 @@ void compareAlgorithms(uint size, uint k, uint numTests, uint* algorithmsToTest,
                 // record the time result
                 timeArray[j][i] = runtime;
 
-                KeyT* h_res = new KeyT[k];
-                cudaMemcpy(h_res, d_res, k * sizeof(KeyT), cudaMemcpyDeviceToHost);
-                std::sort(h_res, h_res + k, std::greater<KeyT>());
-
                 // record the value returned
-                resultsArray[j][i] = h_res;
+                cudaMemcpy(resultsArray[j][i], d_res, k * sizeof(KeyT), cudaMemcpyDeviceToHost);
+                std::sort(resultsArray[j][i], resultsArray[j][i] + k, std::greater<KeyT>());
+
                 // update the current "winner" if necessary
                 if (timeArray[j][i] < currentWinningTime) {
                     currentWinningTime = runtime;
@@ -175,33 +168,26 @@ void compareAlgorithms(uint size, uint k, uint numTests, uint* algorithmsToTest,
 
                 // perform clean up
                 cudaMemcpy(d_vec_copy, d_vec, size * sizeof(KeyT), cudaMemcpyDeviceToDevice);
+                cudaMemset(d_res, 0, k * sizeof(KeyT));
             }
         }
         curandDestroyGenerator(generator);
-        // for (x = 0; x < NUMBEROFALGORITHMS; x++) {
-        //     if (algorithmsToTest[x]) {
-        //         fileCsv << namesOfTimingFunctions[x] << "," << resultsArray[x][i] << "," << timeArray[x][i] << ",";
-        //     }
-        // }
-        // uint flag = 0;
-        // T tempResult = resultsArray[0][i];
-        // for (m = 1; m < NUMBEROFALGORITHMS; m++) {
-        //     if (algorithmsToTest[m]) {
-        //         if (resultsArray[m][i] != tempResult) {
-        //             flag++;
-        //         }
-        //     }
-        // }
-        // fileCsv << flag << "\n";
     }
 
-    // calculate the total time each algorithm took
-    for (i = 0; i < numTests; i++) {
-        for (j = 0; j < NUMBEROFALGORITHMS; j++) {
-            if (algorithmsToTest[j]) {
-                totalTimesPerAlgorithm[j] += timeArray[j][i];
-                minTimesPerAlgorithm[j] = min(minTimesPerAlgorithm[j], timeArray[j][i]);
+    // calculate the statistical data
+    fill_n(standardPerAlgorithm, NUMBEROFALGORITHMS, 0);
+    for (j = 0; j < NUMBEROFALGORITHMS; j++) {
+        maxTimesPerAlgorithm[j] = *max_element(timeArray[j], timeArray[j] + numTests);
+        minTimesPerAlgorithm[j] = *min_element(timeArray[j], timeArray[j] + numTests);
+        totalTimesPerAlgorithm[j] = accumulate(timeArray[j], timeArray[j] + numTests, 0);
+        // 计算均值
+        averageTimesPerAlgorithm[j] = totalTimesPerAlgorithm[j] / numTests;
+        // 计算方差
+        if (numTests > 1) {
+            for (i = 0; i < numTests; i++) {
+                standardPerAlgorithm[j] += pow(timeArray[j][i] - averageTimesPerAlgorithm[j], 2);
             }
+            standardPerAlgorithm[j] = sqrt(standardPerAlgorithm[j] / (numTests - 1));
         }
     }
 
@@ -210,24 +196,29 @@ void compareAlgorithms(uint size, uint k, uint numTests, uint* algorithmsToTest,
         timesWon[winnerArray[i]]++;
     }
 
+#if IS_PRINT_EVERY_TESTING
     printf("\n\n");
+#endif
 
-    // print out the average times
+    // print out the statistical data
+    int total_algorithms = accumulate(algorithmsToTest, algorithmsToTest + NUMBEROFALGORITHMS, 0);
+    // print out header of the table
+    printf("%-20s %-15s %-15s %-15s", "algorithm", "minimum (ms)", "maximum (ms)", "average (ms)");
+    if (numTests > 1) printf(" %-15s", "std dev");
+    if (total_algorithms > 1) printf(" %-15s", "won times");
+    printf("\n");
+    // print out data
     for (i = 0; i < NUMBEROFALGORITHMS; i++) {
         if (algorithmsToTest[i]) {
-            printf("%-20s averaged: %f ms\n", namesOfTimingFunctions[i], totalTimesPerAlgorithm[i] / numTests);
+            printf("%-20s %-15f %-15f %-15f", namesOfTimingFunctions[i], minTimesPerAlgorithm[i],
+                   maxTimesPerAlgorithm[i], averageTimesPerAlgorithm[i]);
+            if (numTests > 1) printf(" %-15f", standardPerAlgorithm[i]);
+            if (total_algorithms > 1) printf(" %-15d", timesWon[i]);
+            printf("\n");
         }
     }
-    for (i = 0; i < NUMBEROFALGORITHMS; i++) {
-        if (algorithmsToTest[i]) {
-            printf("%-20s minimum: %f ms\n", namesOfTimingFunctions[i], minTimesPerAlgorithm[i]);
-        }
-    }
-    for (i = 0; i < NUMBEROFALGORITHMS; i++) {
-        if (algorithmsToTest[i]) {
-            printf("%s won %u times\n", namesOfTimingFunctions[i], timesWon[i]);
-        }
-    }
+    printf("\n");
+
     if (algorithmsToTest[0]) {
         for (i = 0; i < numTests; i++) {
             for (j = 1; j < NUMBEROFALGORITHMS; j++) {
@@ -236,9 +227,13 @@ void compareAlgorithms(uint size, uint k, uint numTests, uint* algorithmsToTest,
                         if (resultsArray[j][i][m] != resultsArray[0][i][m]) {
                             std::cout << namesOfTimingFunctions[j] << " did not return the correct answer on test" << i + 1 << std::endl;
                             std::cout << "Method:\t";
-                            PrintFunctions::printArray<KeyT>(resultsArray[j][i], k);
+                            // PrintFunctions::printArray<KeyT>(resultsArray[j][i], k);
                             std::cout << "Sort:\t";
-                            PrintFunctions::printArray<KeyT>(resultsArray[0][i], k);
+                            // PrintFunctions::printArray<KeyT>(resultsArray[0][i], k);
+                            std::cout << "\n";
+                            for (int l = 0; l < k; l++) {
+                                std::cout << (KeyT)resultsArray[j][i][l] << "  " << (KeyT)resultsArray[0][i][l] << std::endl;
+                            }
                             break;
                         }
                 }
@@ -246,21 +241,25 @@ void compareAlgorithms(uint size, uint k, uint numTests, uint* algorithmsToTest,
         }
     }
 
-    // free d_vec and d_vec_copy
+    // free memory
+    for (i = 0; i < numTests; i++)
+        for (j = 0; j < NUMBEROFALGORITHMS; j++)
+            delete[] resultsArray[j][i];
     cudaFree(d_vec);
     cudaFree(d_vec_copy);
+    cudaFree(d_res);
 }
 
 template <typename KeyT>
 void runTests(uint generateType, int K, uint startPower, uint stopPower, uint timesToTestEachK = 3) {
     // Algorithms To Run
     // timeSort, timeRadixSelect, timeBitonicTopK
-    uint algorithmsToRun[NUMBEROFALGORITHMS] = {1, 1, 1};
+    uint algorithmsToRun[NUMBEROFALGORITHMS];
+    fill_n(algorithmsToRun, NUMBEROFALGORITHMS, 1);
     uint size;
-    for (size = (1 << startPower); size <= (1 << stopPower); size *= 2) {
-        // cudaDeviceReset();
-        // cudaThreadExit();
-        printf("NOW STARTING A NEW K\n\n");
+    uint power;
+    for (size = (1 << startPower), power = startPower; power <= stopPower; size <<= 1, power++) {
+        printf("NOW STARTING A NEW TOP-K [size: 2^%u (%u), k: %d]\n", power, size, K);
         compareAlgorithms<KeyT>(size, K, timesToTestEachK, algorithmsToRun, generateType);
     }
 }
