@@ -14,7 +14,6 @@ using namespace std;
  * @param global_histo        [OUT] The array of element counts, MUST be 256 in size.
  * @param per_block_histo     [OUT]
  */
-// <KeyT, uint, DIGIT_BITS=8, KPT=16, TPB=384, 9>
 template <
     typename KeyT,            // Data type of the keys within device memory. Data will be twiddled (if necessary) to unsigned type
     typename IndexT,          // Data type used for key's offsets and counters (limits number of supported keys, uint = 2^32)
@@ -27,7 +26,6 @@ __global__ void rdxsrt_histogram(KeyT* __restrict__ keys, const uint digit, Inde
     /*** TYPEDEFs ***/
     typedef Traits<KeyT> KeyTraits;
     typedef typename KeyTraits::UnsignedBits UnsignedBits;
-    /* typedef LoadUnit<IndexT, RDXSRT_LOAD_STRIDE_WARP, KPT, TPB> KeyLoader; */
 
     /*** DECLARATIONS ***/
     UnsignedBits tloc_keys[KPT];
@@ -36,10 +34,6 @@ __global__ void rdxsrt_histogram(KeyT* __restrict__ keys, const uint digit, Inde
     __shared__ uint shared_bins[0x01 << NUM_BITS];
 
     /*** INIT SHARED HISTO ***/
-    // threadIdx.x        0  1  2  3 …… 31
-    // i=0                0  1  2  3 …… 31
-    // i=32              32 33 34 35 …… 63
-    // i=224            224 …… …… …… …… 255
     // 将 shared_bins 初始化为全0
     if (threadIdx.x < 32) {
 #pragma unroll
@@ -50,15 +44,10 @@ __global__ void rdxsrt_histogram(KeyT* __restrict__ keys, const uint digit, Inde
     __syncthreads();
 
     /*** GET KEYS & PREPARE KEYS FOR HISTO ***/
-    // Bucket index used to determine the memory offset of the bucket's global histogram
-    const uint bucket_idx = 0;
     // This thread block's keys memory offset, pointing to the index of its first key
-    // grid 是一维的，blockDim.x = TPB = 384
-    // KPT = 16
     const IndexT block_offset = (blockDim.x * blockIdx.x * KPT);
 
 // Load keys
-// KeyLoader(block_offset, threadIdx.x).template LoadStrided<UnsignedBits, KeyT, 0, KPT>(keys, tloc_keys);
 #pragma unroll
     for (int i = 0; i < KPT; i++) {
         // 对于第1个线程来说 tloc_keys 为 keys 的第 0，TPB, 2*TPB，3*TPB，……，15*TPB 个元素
@@ -68,29 +57,21 @@ __global__ void rdxsrt_histogram(KeyT* __restrict__ keys, const uint digit, Inde
         tloc_keys[i] = reinterpret_cast<UnsignedBits*>(keys)[block_offset + threadIdx.x + blockDim.x * i];
     }
 
-// 一定运行
-#if true || USE_RLE_HISTO
-// Mask
+    // Mask
+    uint digit_num = (sizeof(KeyT) * 8 + NUM_BITS - 1) / NUM_BITS;
+    if (digit == digit_num - 1) {  // last digit
 #pragma unroll
-    for (int i = 0; i < KPT; i++) {
-        // ????
-        tloc_keys[i] = KeyTraits::TwiddleIn(tloc_keys[i]);
-        // 如果 sizeof(KeyT) * 8 < NUM_BITS * 4 = 32 会出错
-        // len := sizeof(KeyT) * 8
-        // digit = 0: tloc_masked[i] = tloc_keys[len-1:len-8]
-        // digit = 1: tloc_masked[i] = tloc_keys[len-7:len-16]
-        // digit = 2: tloc_masked[i] = tloc_keys[len-15:len-24]
-        // digit = 3: tloc_masked[i] = tloc_keys[len-23:len-32]
-        tloc_masked[i] = (tloc_keys[i] >> ((sizeof(KeyT) * 8) - (NUM_BITS * (digit + 1)))) & ((0x01 << NUM_BITS) - 1);
+        for (int i = 0; i < KPT; i++) {
+            tloc_keys[i] = KeyTraits::TwiddleIn(tloc_keys[i]);
+            tloc_masked[i] = tloc_keys[i] & ((0x01 << (sizeof(KeyT) * 8 - digit * NUM_BITS)) - 1);
+        }
+    } else {
+#pragma unroll
+        for (int i = 0; i < KPT; i++) {
+            tloc_keys[i] = KeyTraits::TwiddleIn(tloc_keys[i]);
+            tloc_masked[i] = (tloc_keys[i] >> ((sizeof(KeyT) * 8) - (NUM_BITS * (digit + 1)))) & ((0x01 << NUM_BITS) - 1);
+        }
     }
-
-// 不运行
-#if 0
-  /*** SORT RUNS ***/
-  if (PRE_SORT_RUNS_LENGTH > 1) {
-    SortingNetwork<uint>::sort_runs<PRE_SORT_RUNS_LENGTH>(tloc_masked);
-  }
-#endif
 
     /*** COMPUTE HISTO ***/
     uint rle = 1;
@@ -105,14 +86,6 @@ __global__ void rdxsrt_histogram(KeyT* __restrict__ keys, const uint digit, Inde
         }
     }
     atomicAdd(&shared_bins[tloc_masked[KPT - 1]], rle);
-// 一定不运行
-#else
-#pragma unroll
-    for (int i = 0; i < KPT; i++) {
-        tloc_masked[i] = (tloc_keys[i] >> ((sizeof(KeyT) * 8) - (NUM_BITS * (digit + 1)))) & ((0x01 << NUM_BITS) - 1);
-        atomicAdd(&shared_bins[tloc_masked[i]], 1);
-    }
-#endif
 
     // Make sure we've got the counts from all threads
     __syncthreads();
@@ -120,13 +93,11 @@ __global__ void rdxsrt_histogram(KeyT* __restrict__ keys, const uint digit, Inde
     /*** Write shared histo to global histo ***/
     if (threadIdx.x < 32) {
         for (int i = 0; i < (0x01 << NUM_BITS); i += 32) {
-            atomicAdd(&global_histo[(0x01 << NUM_BITS) * bucket_idx + i + threadIdx.x], shared_bins[i + threadIdx.x]);
-            // per_block_histo[blockIdx.x*(0x01<<NUM_BITS)+i+threadIdx.x] = shared_bins[i+threadIdx.x];
+            atomicAdd(&global_histo[i + threadIdx.x], shared_bins[i + threadIdx.x]);
         }
     }
 }
 
-// <KeyT, uint, DIGIT_BITS=8, KPT=16, TPB=384, 9>
 template <
     typename KeyT,            // Data type of the keys within device memory. Data will be twiddled (if necessary) to unsigned type
     typename IndexT,          // Data type used for key's offsets and counters (limits number of supported keys, uint = 2^32)
@@ -144,7 +115,6 @@ __global__ void rdxsrt_histogram_with_guards(KeyT* __restrict__ keys, const uint
     /*** DECLARATIONS ***/
     UnsignedBits tloc_keys[KPT];
     uint tloc_masked[KPT];
-    // (0x01 << NUM_BITS) + 1 = 257
     __shared__ uint shared_bins[(0x01 << NUM_BITS) + 1];
 
     /*** INIT SHARED HISTO ***/
@@ -157,10 +127,7 @@ __global__ void rdxsrt_histogram_with_guards(KeyT* __restrict__ keys, const uint
     __syncthreads();
 
     /*** GET KEYS & PREPARE KEYS FOR HISTO ***/
-    // Bucket index used to determine the memory offset of the bucket's global histogram
-    const uint bucket_idx = 0;
     // This thread block's keys memory offset, pointing to the index of its first key
-    // block_index_offset := num_item / KPB
     const IndexT block_offset = (blockDim.x * (block_index_offset + blockIdx.x) * KPT);
 
     // Maximum number of keys the block may fetch
@@ -173,13 +140,24 @@ __global__ void rdxsrt_histogram_with_guards(KeyT* __restrict__ keys, const uint
         }
     }
 
+    uint digit_num = (sizeof(KeyT) * 8 + NUM_BITS - 1) / NUM_BITS;
+    if (digit == digit_num - 1) {  // last digit
 #pragma unroll
-    for (int i = 0; i < KPT; i++) {
-        // if(KeyLoader(block_offset, threadIdx.x).ThreadIndexInBounds(block_max_num_keys, i)){
-        if ((threadIdx.x + blockDim.x * i) < block_max_num_keys) {
-            tloc_keys[i] = KeyTraits::TwiddleIn(tloc_keys[i]);
-            tloc_masked[i] = (tloc_keys[i] >> ((sizeof(KeyT) * 8) - (NUM_BITS * (digit + 1)))) & ((0x01 << NUM_BITS) - 1);
-            atomicAdd(&shared_bins[tloc_masked[i]], 1);
+        for (int i = 0; i < KPT; i++) {
+            if ((threadIdx.x + blockDim.x * i) < block_max_num_keys) {
+                tloc_keys[i] = KeyTraits::TwiddleIn(tloc_keys[i]);
+                tloc_masked[i] = tloc_keys[i] & ((0x01 << (sizeof(KeyT) * 8 - digit * NUM_BITS)) - 1);
+                atomicAdd(&shared_bins[tloc_masked[i]], 1);
+            }
+        }
+    } else {
+#pragma unroll
+        for (int i = 0; i < KPT; i++) {
+            if ((threadIdx.x + blockDim.x * i) < block_max_num_keys) {
+                tloc_keys[i] = KeyTraits::TwiddleIn(tloc_keys[i]);
+                tloc_masked[i] = (tloc_keys[i] >> ((sizeof(KeyT) * 8) - (NUM_BITS * (digit + 1)))) & ((0x01 << NUM_BITS) - 1);
+                atomicAdd(&shared_bins[tloc_masked[i]], 1);
+            }
         }
     }
 
@@ -189,8 +167,7 @@ __global__ void rdxsrt_histogram_with_guards(KeyT* __restrict__ keys, const uint
     /*** Write shared histo to global histo ***/
     if (threadIdx.x < 32) {
         for (int i = 0; i < (0x01 << NUM_BITS); i += 32) {
-            atomicAdd(&global_histo[(0x01 << NUM_BITS) * bucket_idx + i + threadIdx.x], shared_bins[i + threadIdx.x]);
-            // per_block_histo[(block_index_offset + blockIdx.x)*(0x01<<NUM_BITS)+i+threadIdx.x] = shared_bins[i+threadIdx.x];
+            atomicAdd(&global_histo[i + threadIdx.x], shared_bins[i + threadIdx.x]);
         }
     }
 }
@@ -203,15 +180,11 @@ __global__ void rdxsrt_histogram_with_guards(KeyT* __restrict__ keys, const uint
  * @param digit            [IN] Digit index (0 => highest digit, 3 => lowest digit for 32-bit)
  * @param digit_val        [IN] Digit value.
  * @param num_items        [IN] Number of entries.
- * // <ERROR>: @param d_keys_buffer       [OUT] Entries with x[digit] = digit_val.
- * @param d_keys_buffer    [OUT] Entries with x[digit] > digit_val.
+ * @param d_keys_buffer    [OUT] Entries with x[digit] = digit_val.
  * @param d_keys_out       [OUT] Entries with x[digit] > digit_val.
  * @param d_index_buffer   [OUT] Index into d_keys_buffer.
  * @param d_index_out      [OUT] Index into d_keys_out.
  */
-// <KeyT, uint, DIGIT_BITS=8, KPT=16, TPB=384>
-// <<<num_blocks + remainder_blocks, TPB=384>>>
-// (d_keys.Current(), digit, digit_val, num_items, d_keys.Alternate(), d_keys_out, d_index_buffer, d_index_out);
 template <
     typename KeyT,    // Data type of the keys within device memory. Data will be twiddled (if necessary) to unsigned type
     typename IndexT,  // Data type used for key's offsets and counters (limits number of supported keys, uint = 2^32)
@@ -239,7 +212,7 @@ __global__ void select_kth_bucket(KeyT* d_keys_in, const uint digit, const uint 
         typename BlockLoadT::TempStorage load_items;
         typename BlockScanT::TempStorage scan;
         int offset[1];
-        UnsignedBits raw_exchange[2 * TPB * KPT];
+        UnsignedBits raw_exchange[TPB * KPT];
     } temp_storage;
 
     // Load a segment of consecutive items that are blocked across threads
@@ -272,16 +245,30 @@ __global__ void select_kth_bucket(KeyT* d_keys_in, const uint digit, const uint 
 
     __syncthreads();
 
-/*** Step 1: Find keys with digit value to selected digit value ***/
+    /*** Step 1: Find keys with digit value to selected digit value ***/
+    uint digit_num = (sizeof(KeyT) * 8 + NUM_BITS - 1) / NUM_BITS;
+    if (digit == digit_num - 1) {  // last digit
 #pragma unroll
-    for (int ITEM = 0; ITEM < KPT; ++ITEM) {
-        // Out-of-bounds items are selection_flags
-        selection_flags[ITEM] = 0;
+        for (int ITEM = 0; ITEM < KPT; ++ITEM) {
+            // Out-of-bounds items are selection_flags
+            selection_flags[ITEM] = 0;
+            if (!is_last_tile || (int(threadIdx.x * KPT) + ITEM < num_tile_items)) {
+                UnsignedBits key = KeyTraits::TwiddleIn(key_entries[ITEM]);
+                uint masked_key = key & ((0x01 << (sizeof(KeyT) * 8 - digit * NUM_BITS)) - 1);
+                selection_flags[ITEM] = (masked_key > digit_val);
+            }
+        }
 
-        if (!is_last_tile || (int(threadIdx.x * KPT) + ITEM < num_tile_items)) {
-            UnsignedBits key = KeyTraits::TwiddleIn(key_entries[ITEM]);
-            uint masked_key = (key >> ((sizeof(KeyT) * 8) - (NUM_BITS * (digit + 1)))) & ((0x01 << NUM_BITS) - 1);
-            selection_flags[ITEM] = (masked_key > digit_val);
+    } else {
+#pragma unroll
+        for (int ITEM = 0; ITEM < KPT; ++ITEM) {
+            // Out-of-bounds items are selection_flags
+            selection_flags[ITEM] = 0;
+            if (!is_last_tile || (int(threadIdx.x * KPT) + ITEM < num_tile_items)) {
+                UnsignedBits key = KeyTraits::TwiddleIn(key_entries[ITEM]);
+                uint masked_key = (key >> ((sizeof(KeyT) * 8) - (NUM_BITS * (digit + 1)))) & ((0x01 << NUM_BITS) - 1);
+                selection_flags[ITEM] = (masked_key > digit_val);
+            }
         }
     }
 
@@ -341,16 +328,29 @@ __global__ void select_kth_bucket(KeyT* d_keys_in, const uint digit, const uint 
 #endif
     }
 
-/*** Step 2: Find entries that have digit equal to digit value ***/
+    /*** Step 2: Find entries that have digit equal to digit value ***/
+    if (digit == digit_num - 1) {  // last digit
 #pragma unroll
-    for (int ITEM = 0; ITEM < KPT; ++ITEM) {
-        // Out-of-bounds items are selection_flags
-        selection_flags[ITEM] = 0;
+        for (int ITEM = 0; ITEM < KPT; ++ITEM) {
+            // Out-of-bounds items are selection_flags
+            selection_flags[ITEM] = 0;
+            if (!is_last_tile || (int(threadIdx.x * KPT) + ITEM < num_tile_items)) {
+                UnsignedBits key = KeyTraits::TwiddleIn(key_entries[ITEM]);
+                uint masked_key = key & ((0x01 << (sizeof(KeyT) * 8 - digit * NUM_BITS)) - 1);
+                selection_flags[ITEM] = (masked_key == digit_val);
+            }
+        }
+    } else {
+#pragma unroll
+        for (int ITEM = 0; ITEM < KPT; ++ITEM) {
+            // Out-of-bounds items are selection_flags
+            selection_flags[ITEM] = 0;
 
-        if (!is_last_tile || (int(threadIdx.x * KPT) + ITEM < num_tile_items)) {
-            UnsignedBits key = KeyTraits::TwiddleIn(key_entries[ITEM]);
-            uint masked_key = (key >> ((sizeof(KeyT) * 8) - (NUM_BITS * (digit + 1)))) & ((0x01 << NUM_BITS) - 1);
-            selection_flags[ITEM] = (masked_key == digit_val);
+            if (!is_last_tile || (int(threadIdx.x * KPT) + ITEM < num_tile_items)) {
+                UnsignedBits key = KeyTraits::TwiddleIn(key_entries[ITEM]);
+                uint masked_key = (key >> ((sizeof(KeyT) * 8) - (NUM_BITS * (digit + 1)))) & ((0x01 << NUM_BITS) - 1);
+                selection_flags[ITEM] = (masked_key == digit_val);
+            }
         }
     }
 
@@ -397,8 +397,8 @@ __global__ void select_kth_bucket(KeyT* d_keys_in, const uint digit, const uint 
 
 // <ERROR>: 只能支持sizeof(KeyT)为4的数据类型
 #define KPT 16
-#define TPB 384
-#define DIGIT_BITS 8
+#define TPB 320
+#define DIGIT_BITS 13
 template <typename KeyT>
 cudaError_t radixSelectTopK(KeyT* d_keys_in, uint num_items, uint k, KeyT* d_keys_out,
                             CachingDeviceAllocator& g_allocator) {
@@ -410,10 +410,6 @@ cudaError_t radixSelectTopK(KeyT* d_keys_in, uint num_items, uint k, KeyT* d_key
     CubDebugExit(g_allocator.DeviceAllocate((void**)&d_keys.d_buffers[1], sizeof(KeyT) * num_items));
 
     uint* d_histogram;
-    // 通过后文，知道，d_histogram 只有前 256 个空间被使用了，
-    // 所以给其分配 num_items 应该是写错了，否则，当 num_items < 256 时，程序会出错
-    // <ERROR>: 这里 num_item 应该为 1 << DIGIT_BITS
-    // CubDebugExit(g_allocator.DeviceAllocate((void**)&d_histogram, sizeof(uint) * num_items));
     CubDebugExit(g_allocator.DeviceAllocate((void**)&d_histogram, sizeof(uint) * (0x01 << DIGIT_BITS)));
 
     // We allocate two indices, one that maintains index into output array (this goes till K)
@@ -424,42 +420,35 @@ cudaError_t radixSelectTopK(KeyT* d_keys_in, uint num_items, uint k, KeyT* d_key
     CubDebugExit(g_allocator.DeviceAllocate((void**)&d_index_buffer, sizeof(uint)));
 
     // Set the index into output array to 0.
-    cudaMemset(d_index_out, 0, 4);
+    cudaMemset(d_index_out, 0, sizeof(uint));
 
-    // <WARNING>：256 改为 1 << DIGIT_BITS 会好一些
-    uint* h_histogram = new uint[256];
+    uint* h_histogram = new uint[1 << DIGIT_BITS];
 
     uint KPB = KPT * TPB;
 
-    for (uint digit = 0; digit < 4; digit++) {
+    uint digit_num = (sizeof(KeyT) * 8 + DIGIT_BITS - 1) / DIGIT_BITS;
+    for (uint digit = 0; digit < digit_num; digit++) {
         uint num_blocks = num_items / KPB;                             // Pass-0 rough processing blocks (floor on purpose)
         uint processed_elements = num_blocks * KPB;                    // Pass-0 number of rough processed elements
         uint remaining_elements = num_items - processed_elements;      // Do the remaining elements with a check in the inner loop
         uint remainder_blocks = (KPB - 1 + remaining_elements) / KPB;  // Number of blocks required for remaining elements (typically 0 or 1)
 
         // Zero out the histogram
-        // d_histogram 长度为 num_items，初始化了前 265 个空间
-        // <WARNING>：256 * 4 改为 (1 << DIGIT_BITS) * sizeof(uint) 会好一些
-        cudaMemset(d_histogram, 0, 256 * 4);
+        cudaMemset(d_histogram, 0, (1 << DIGIT_BITS) * sizeof(uint));
 
         if (num_blocks > 0)
             rdxsrt_histogram<KeyT, uint, DIGIT_BITS, KPT, TPB, 9><<<num_blocks, TPB, 0>>>(d_keys.Current(), digit, d_histogram);
         if (remaining_elements > 0)
-            // 当 remaining_elements > 0 时，定有 remaining_elements < 384，remainder_blocks = 1
             rdxsrt_histogram_with_guards<KeyT, uint, DIGIT_BITS, KPT, TPB, 9><<<remainder_blocks, TPB, 0>>>(d_keys.Current(), digit, d_histogram, num_items, num_blocks);
 
-        // <WARNING>：256 改为 (1 << DIGIT_BITS) 会好一些
-        cudaMemcpy(h_histogram, d_histogram, 256 * sizeof(uint), cudaMemcpyDeviceToHost);
+        cudaMemcpy(h_histogram, d_histogram, (1 << DIGIT_BITS) * sizeof(uint), cudaMemcpyDeviceToHost);
 
         // Check for failure to launch
         CubDebugExit(error = cudaPeekAtLastError());
 
-        // 为什么要copy两次？？？？
-        // cudaMemcpy(h_histogram, d_histogram, 256 * sizeof(uint), cudaMemcpyDeviceToHost);
         uint rolling_sum = 0;
         uint digit_val;
-        // <WARNING>：255 改为 (1 << DIGIT_BITS) - 1 会好一些
-        for (int i = 255; i >= 0; i--) {
+        for (int i = (1 << DIGIT_BITS) - 1; i >= 0; i--) {
             if ((rolling_sum + h_histogram[i]) > k) {
                 // 表示digit数字值为 (digit_val+1) …… 255 的子桶中的元素都是 top-k 元素
                 // 并且第 k 个元素在digit数字值为 digit_val （或 digit_val+1）的子桶中
@@ -472,8 +461,7 @@ cudaError_t radixSelectTopK(KeyT* d_keys_in, uint num_items, uint k, KeyT* d_key
             rolling_sum += h_histogram[i];
         }
 
-        // <WARNING>：4 改为 sizeof(uint) 会好一些
-        cudaMemset(d_index_buffer, 0, 4);
+        cudaMemset(d_index_buffer, 0, sizeof(uint));
 
         // 运行结束后，
         // d_keys.Alternate() 指向的空间存放了digit数字值为 digit_val 的子桶中的所有元素
@@ -496,9 +484,8 @@ cudaError_t radixSelectTopK(KeyT* d_keys_in, uint num_items, uint k, KeyT* d_key
         if (k == 0)
             // 意即本次遍历后 d_keys_out 已经有了所有的 top-k 元素
             break;
-        else if (k != 0 && digit == 3) {
-            // <ERROR>: there should be k != 0
-            // We are at last digit and k != 4 implies that kth value has repetition.
+        else if (k != 0 && digit == digit_num - 1) {
+            // We are at last digit and k != 0 implies that kth value has repetition.
             // Copy any of the repeated values to out array to complete the array.
             cudaMemcpy(d_keys_out + h_index_out, d_keys.Alternate(), k * sizeof(KeyT), cudaMemcpyDeviceToDevice);
             k -= k;
