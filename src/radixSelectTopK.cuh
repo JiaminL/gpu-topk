@@ -1,3 +1,5 @@
+#pragma once
+
 #include <cuda.h>
 #include <cub/device/device_radix_sort.cuh>
 #include <cub/util_allocator.cuh>

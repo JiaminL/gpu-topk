@@ -18,9 +18,11 @@
 #include "sortTopK.cuh"
 #include "radixSelectTopK.cuh"
 #include "bitonicTopK.cuh"
+#include "thresholdTopK.cuh"
+// #include "testTime.cuh"
 
 #define IS_PRINT_EVERY_TESTING false
-#define IS_PRINT_DIFF true
+#define IS_PRINT_DIFF false
 
 #define SETUP_TIMING()       \
     cudaEvent_t start, stop; \
@@ -40,12 +42,12 @@
 #define INIT_FUNCTIONS()                                                                           \
     typedef cudaError_t (*ptrToTimingFunction)(KeyT*, uint, uint, KeyT*, CachingDeviceAllocator&); \
     const char* namesOfTimingFunctions[NUMBEROFALGORITHMS] = {                                     \
-        "Sort",                                                                                    \
+        "Threshold TopK",                                                                          \
         "Radix Select",                                                                            \
         "Bitonic TopK",                                                                            \
     };                                                                                             \
     ptrToTimingFunction arrayOfTimingFunctions[NUMBEROFALGORITHMS] = {                             \
-        &sortTopK<KeyT>,                                                                           \
+        &thresholdTopK<KeyT>,                                                                      \
         &radixSelectTopK<KeyT>,                                                                    \
         &bitonicTopK<KeyT>,                                                                        \
     };
@@ -127,8 +129,6 @@ void compareAlgorithms(uint size, uint k, uint numTests, uint* algorithmsToTest,
         // KeyT* h_vec = new KeyT[size];
         // cudaMemcpy(h_vec, d_vec, size * sizeof(KeyT), cudaMemcpyDeviceToHost);
         // h_vec[0] = (KeyT)(-1034);
-        // h_vec[1] = (KeyT)(0.5);
-        // h_vec[2] = (KeyT)(1.0);
         // cudaMemcpy(d_vec, h_vec, size * sizeof(KeyT), cudaMemcpyHostToDevice);
         // delete[] h_vec;
 
@@ -229,6 +229,7 @@ void compareAlgorithms(uint size, uint k, uint numTests, uint* algorithmsToTest,
         }
     }
     printf("\n");
+
 #if IS_PRINT_DIFF
     if (algorithmsToTest[0]) {
         for (i = 0; i < numTests; i++) {

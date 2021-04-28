@@ -29,7 +29,7 @@ INCLUDES := -I$(CUB_DIR) -I$(SOURCE_DIR) -I$(TEST_DIR)
 #obj/%.o: src/%.cu $(DEPS)
 #	$(NVCC) $(CFLAGS) -I. $(INCLUDES) -g $(GENCODE_FLAGS) $< -o $@
 
-compareTopKAlgorithms: test/compareTopKAlgorithms.cu src/bitonicTopK.cuh src/radixSelectTopK.cuh src/sortTopK.cuh
+compareTopKAlgorithms: test/compareTopKAlgorithms.cu src/bitonicTopK.cuh src/radixSelectTopK.cuh src/sortTopK.cuh src/bitonicUsing.cuh src/thresholdTopK.cuh src/testTime.cuh
 	$(NVCC) $(CFLAGS) $(INCLUDES) test/compareTopKAlgorithms.cu $(LDFLAGS) -o compareTopKAlgorithms
 
 clean:
