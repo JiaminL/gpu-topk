@@ -19,6 +19,7 @@
 #include "radixSelectTopK.cuh"
 #include "bitonicTopK.cuh"
 #include "thresholdTopK.cuh"
+#include "impreciseBitonicTopK.cuh"
 // #include "testTime.cuh"
 
 #define IS_PRINT_EVERY_TESTING false
@@ -38,18 +39,20 @@
         cudaEventElapsedTime(&t, start, stop); \
     }
 
-#define NUMBEROFALGORITHMS 3
+#define NUMBEROFALGORITHMS 4
 #define INIT_FUNCTIONS()                                                                           \
     typedef cudaError_t (*ptrToTimingFunction)(KeyT*, uint, uint, KeyT*, CachingDeviceAllocator&); \
     const char* namesOfTimingFunctions[NUMBEROFALGORITHMS] = {                                     \
-        "Threshold TopK",                                                                          \
         "Radix Select",                                                                            \
         "Bitonic TopK",                                                                            \
+        "Threshold TopK",                                                                          \
+        "Imprecise Bitonic",                                                                       \
     };                                                                                             \
     ptrToTimingFunction arrayOfTimingFunctions[NUMBEROFALGORITHMS] = {                             \
-        &thresholdTopK<KeyT>,                                                                      \
         &radixSelectTopK<KeyT>,                                                                    \
         &bitonicTopK<KeyT>,                                                                        \
+        &thresholdTopK<KeyT>,                                                                      \
+        &impreciseBitonicTopK<KeyT>,                                                               \
     };
 
 using namespace std;
