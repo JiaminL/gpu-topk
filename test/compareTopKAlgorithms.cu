@@ -155,11 +155,13 @@ void compareAlgorithms(uint size, uint k, uint numTests, uint* algorithmsToTest,
 #endif
         // generate the random vector using the specified distribution
         arrayOfGenerators[generateType](d_vec, size, generator, g_allocator);
-        if (size == (uint)(2 << 30) / sizeof(KeyT)) {  // 2GB
-            // printf("sleep 100\n");
-            usleep(100000);                                   // sleep 100 ms
-        } else if (size == (uint)(1 << 30) / sizeof(KeyT)) {  // 1GB
-            usleep(50000);                                    // sleep 50 ms
+        if (generateType == 1 || generateType == 2) {  // 如果是升序或降序（需要申请临时空间用来排序）
+            if (size == (uint)(2 << 30) / sizeof(KeyT)) {  // 2GB
+                // printf("sleep 100\n");
+                usleep(50000);                                    // sleep 50 ms
+            } else if (size == (uint)(1 << 30) / sizeof(KeyT)) {  // 1GB
+                usleep(20000);                                    // sleep 20 ms
+            }
         }
 
         // KeyT* h_vec = new KeyT[size];
@@ -182,11 +184,13 @@ void compareAlgorithms(uint size, uint k, uint numTests, uint* algorithmsToTest,
                 // 我猜测 GPU 释放空间与函数返回是异步的，上一次测试申请的空间还没有释放结束，下一次测试函数就开始了
                 // 由于我的 GPU 显存只有 8GB，如果原始数据大小为 2GB，因为 GPU 没有更多的 2GB 空间用来分配（d_vec_copy, d_vec 已经使用了 4GB）
                 // 下一次测试必须等待，导致除第一个上 GPU 的测试外，其余测试都有 30 ~ 50 ms 不等的延时
-                if (size == (uint)(2 << 30) / sizeof(KeyT)) {  // 2GB
-                    // printf("sleep 100\n");
-                    usleep(100000);                                   // sleep 100 ms
-                } else if (size == (uint)(1 << 30) / sizeof(KeyT)) {  // 1GB
-                    usleep(50000);                                    // sleep 50 ms
+                if (j == 0) {                                      // 如果是 sort top-k 算法（需要申请临时空间）
+                    if (size == (uint)(2 << 30) / sizeof(KeyT)) {  // 2GB
+                        // printf("sleep 100\n");
+                        usleep(50000);                                    // sleep 50 ms
+                    } else if (size == (uint)(1 << 30) / sizeof(KeyT)) {  // 1GB
+                        usleep(20000);                                    // sleep 20 ms
+                    }
                 }
 #if NEED_PRINT_EVERY_TESTING
                 printf("\tTESTING: %-2u %-20s runtime: %f ms\n", j, namesOfTimingFunctions[j], runtime);

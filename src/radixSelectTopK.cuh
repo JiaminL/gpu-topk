@@ -178,13 +178,13 @@ __global__ void rdxsrt_histogram_with_guards(KeyT* __restrict__ keys, const uint
  * Makes a single pass over the input array to find entries whose digit is equal to selected digit value and greater than
  * digit value. Entries equal to digit value are written to keys_buffer for future processing, entries greater
  * are written to output array.
- * @param d_keys_in        [IN] The keys for which to compute the histogram
+ * @param d_keys        [IN] The keys for which to compute the histogram
+ *                      [OUT] Entries with x[digit] = digit_val.
  * @param digit            [IN] Digit index (0 => highest digit, 3 => lowest digit for 32-bit)
  * @param digit_val        [IN] Digit value.
  * @param num_items        [IN] Number of entries.
- * @param d_keys_buffer    [OUT] Entries with x[digit] = digit_val.
  * @param d_keys_out       [OUT] Entries with x[digit] > digit_val.
- * @param d_index_buffer   [OUT] Index into d_keys_buffer.
+ * @param d_index_buffer   [OUT] Index into d_keys[OUT].
  * @param d_index_out      [OUT] Index into d_keys_out.
  */
 template <
@@ -194,8 +194,8 @@ template <
     int KPT,          // Number of keys per thread
     int TPB           // Number of threads per block
     >
-__global__ void select_kth_bucket(KeyT* d_keys_in, const uint digit, const uint digit_val, uint num_items,
-                                  KeyT* d_keys_buffer, KeyT* d_keys_out, uint* d_index_buffer, uint* d_index_out) {
+__global__ void select_kth_bucket(KeyT* d_keys, const uint digit, const uint digit_val, uint num_items,
+                                  KeyT* d_keys_out, uint* d_index_buffer, uint* d_index_out) {
     typedef Traits<KeyT> KeyTraits;
     typedef typename KeyTraits::UnsignedBits UnsignedBits;
 
@@ -234,9 +234,9 @@ __global__ void select_kth_bucket(KeyT* d_keys_in, const uint digit, const uint 
 
     // Load keys
     if (is_last_tile)
-        BlockLoadT(temp_storage.load_items).Load(reinterpret_cast<UnsignedBits*>(d_keys_in) + tile_offset, key_entries, num_tile_items);
+        BlockLoadT(temp_storage.load_items).Load(reinterpret_cast<UnsignedBits*>(d_keys) + tile_offset, key_entries, num_tile_items);
     else
-        BlockLoadT(temp_storage.load_items).Load(reinterpret_cast<UnsignedBits*>(d_keys_in) + tile_offset, key_entries);
+        BlockLoadT(temp_storage.load_items).Load(reinterpret_cast<UnsignedBits*>(d_keys) + tile_offset, key_entries);
 
 #if 0
   if (is_last_tile)
@@ -390,7 +390,7 @@ __global__ void select_kth_bucket(KeyT* d_keys_in, const uint digit, const uint 
 
         // Write out output entries
         for (int item = threadIdx.x; item < num_selected; item += TPB) {
-            reinterpret_cast<UnsignedBits*>(d_keys_buffer)[index_buffer + item] = temp_storage.raw_exchange[item];
+            reinterpret_cast<UnsignedBits*>(d_keys)[index_buffer + item] = temp_storage.raw_exchange[item];
         }
 
         __syncthreads();
@@ -405,11 +405,6 @@ template <typename KeyT>
 cudaError_t radixSelectTopK(KeyT* d_keys_in, uint num_items, uint k, KeyT* d_keys_out,
                             CachingDeviceAllocator& g_allocator) {
     cudaError error = cudaSuccess;
-
-    // 双缓冲 d_keys，一个指向输入数组，一个指向device新分配的大小为 num_items 的空间
-    DoubleBuffer<KeyT> d_keys;
-    d_keys.d_buffers[0] = d_keys_in;
-    CubDebugExit(g_allocator.DeviceAllocate((void**)&d_keys.d_buffers[1], sizeof(KeyT) * num_items));
 
     uint* d_histogram;
     CubDebugExit(g_allocator.DeviceAllocate((void**)&d_histogram, sizeof(uint) * (0x01 << DIGIT_BITS)));
@@ -439,9 +434,9 @@ cudaError_t radixSelectTopK(KeyT* d_keys_in, uint num_items, uint k, KeyT* d_key
         cudaMemset(d_histogram, 0, (1 << DIGIT_BITS) * sizeof(uint));
 
         if (num_blocks > 0)
-            rdxsrt_histogram<KeyT, uint, DIGIT_BITS, KPT, TPB, 9><<<num_blocks, TPB, 0>>>(d_keys.Current(), digit, d_histogram);
+            rdxsrt_histogram<KeyT, uint, DIGIT_BITS, KPT, TPB, 9><<<num_blocks, TPB, 0>>>(d_keys_in, digit, d_histogram);
         if (remaining_elements > 0)
-            rdxsrt_histogram_with_guards<KeyT, uint, DIGIT_BITS, KPT, TPB, 9><<<remainder_blocks, TPB, 0>>>(d_keys.Current(), digit, d_histogram, num_items, num_blocks);
+            rdxsrt_histogram_with_guards<KeyT, uint, DIGIT_BITS, KPT, TPB, 9><<<remainder_blocks, TPB, 0>>>(d_keys_in, digit, d_histogram, num_items, num_blocks);
 
         cudaMemcpy(h_histogram, d_histogram, (1 << DIGIT_BITS) * sizeof(uint), cudaMemcpyDeviceToHost);
 
@@ -466,11 +461,11 @@ cudaError_t radixSelectTopK(KeyT* d_keys_in, uint num_items, uint k, KeyT* d_key
         cudaMemset(d_index_buffer, 0, sizeof(uint));
 
         // 运行结束后，
-        // d_keys.Alternate() 指向的空间存放了digit数字值为 digit_val 的子桶中的所有元素
+        // d_keys_in 指向的空间存放了 digit 数字值为 digit_val 的子桶中的所有元素
         // d_keys_out 是一定属于 top-k 的子桶的集合
-        // d_index_buffer 为 d_keys.Alternate() 指向空间的元素个数
+        // d_index_buffer 为 d_keys_in 指向空间的有效元素个数
         // d_index_out 为 d_keys_out 中的元素个数，注意：每次循环，并未置零 d_index_out，所以会一直累加
-        select_kth_bucket<KeyT, uint, DIGIT_BITS, KPT, TPB><<<num_blocks + remainder_blocks, TPB>>>(d_keys.Current(), digit, digit_val, num_items, d_keys.Alternate(), d_keys_out, d_index_buffer, d_index_out);
+        select_kth_bucket<KeyT, uint, DIGIT_BITS, KPT, TPB><<<num_blocks + remainder_blocks, TPB>>>(d_keys_in, digit, digit_val, num_items, d_keys_out, d_index_buffer, d_index_out);
 
         CubDebugExit(error = cudaPeekAtLastError());
 
@@ -489,17 +484,12 @@ cudaError_t radixSelectTopK(KeyT* d_keys_in, uint num_items, uint k, KeyT* d_key
         else if (k != 0 && digit == digit_num - 1) {
             // We are at last digit and k != 0 implies that kth value has repetition.
             // Copy any of the repeated values to out array to complete the array.
-            cudaMemcpy(d_keys_out + h_index_out, d_keys.Alternate(), k * sizeof(KeyT), cudaMemcpyDeviceToDevice);
+            cudaMemcpy(d_keys_out + h_index_out, d_keys_in, k * sizeof(KeyT), cudaMemcpyDeviceToDevice);
             k -= k;
         }
-
-        // Toggle the buffer index in the double buffer
-        d_keys.selector = d_keys.selector ^ 1;
     }
 
     // Cleanup
-    if (d_keys.d_buffers[1])
-        CubDebugExit(g_allocator.DeviceFree(d_keys.d_buffers[1]));
     if (d_histogram)
         CubDebugExit(g_allocator.DeviceFree(d_histogram));
     if (d_index_buffer)

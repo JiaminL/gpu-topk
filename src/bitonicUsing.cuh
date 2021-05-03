@@ -216,8 +216,7 @@ int log2_32(uint value) {
 }
 
 template <typename T>
-__global__ void Bitonic_TopKLocalSortInPlace(T* __restrict__ in, T* __restrict__ out,
-                                             const int k, const int klog2) {
+__global__ void Bitonic_TopKLocalSortInPlace(T* data, const int k, const int klog2) {
     // const int k = K;
     // const int klog2 = KLog2;
 
@@ -226,6 +225,7 @@ __global__ void Bitonic_TopKLocalSortInPlace(T* __restrict__ in, T* __restrict__
     // We use this to break bank conflicts.
     SharedMemory<T> smem;
     T* sdata = smem.getPointer();
+    T *in = data, *out = data;
 
     const int t = threadIdx.x;  // index in workgroup
     const int wg = blockDim.x;  // workgroup size = block size, power of 2
@@ -512,13 +512,13 @@ __global__ void Bitonic_TopKLocalSortInPlace(T* __restrict__ in, T* __restrict__
 //           处理结果：经历 reduce_times 次的 merge 与 reduce 之后，获得长度为 blockDim.x 的一系列长度为 k 的双调序列
 // (blockDim.x、k 都为 2 的幂，且 blockDim.x >= k)
 template <typename T>
-__global__ void Bitonic_TopKReduce(T* __restrict__ in, T* __restrict__ out,
-                                   const int k, const int klog2, const int reduce_times) {
+__global__ void Bitonic_TopKReduce(T* data, const int k, const int klog2, const int reduce_times) {
     // Shared mem size is determined by the host app at run time.
     // For n elements, we have n * 33/32 shared memory.
     // We use this to break bank conflicts.
     SharedMemory<T> smem;
     T* sdata = smem.getPointer();
+    T *in = data, *out = data;
 
     const int t = threadIdx.x;  // index in workgroup
     const int wg = blockDim.x;  // workgroup size = block size, power of 2
@@ -734,14 +734,14 @@ __global__ void Bitonic_TopKReduce(T* __restrict__ in, T* __restrict__ out,
 
 // 只进行 local sort 然后进行 1 次 reduce，每个 block 只处理 2 * blockDim.x 的数据
 template <typename T>
-__global__ void Bitonic_TopKLocalSort(T* __restrict__ in, T* __restrict__ out,
-                                      const int k, const int klog2) {
+__global__ void Bitonic_TopKLocalSort(T* data, const int k, const int klog2) {
     // Shared mem size is determined by the host app at run time.
     // For n elements, we have n * 33/32 shared memory.
     // We use this to break bank conflicts.
 
     SharedMemory<T> smem;
     T* sdata = smem.getPointer();
+    T *in = data, *out = data;
 
     const int t = threadIdx.x;  // index in workgroup
     const int wg = blockDim.x;  // workgroup size = block size, power of 2
