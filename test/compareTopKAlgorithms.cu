@@ -15,6 +15,7 @@
 
 #include "printFunctions.cuh"
 #include "generateProblems.cuh"
+#include "sort.cuh"
 #include "sortTopK.cuh"
 #include "radixSelectTopK.cuh"
 #include "bitonicTopK.cuh"
@@ -22,8 +23,9 @@
 #include "impreciseBitonicTopK.cuh"
 // #include "testTime.cuh"
 
-#define IS_PRINT_EVERY_TESTING false
-#define IS_PRINT_DIFF false
+#define NEED_PRINT_EVERY_TESTING false
+#define NEED_PRINT_DIFF false
+#define NEED_ANALYSIS true
 
 #define SETUP_TIMING()       \
     cudaEvent_t start, stop; \
@@ -39,21 +41,28 @@
         cudaEventElapsedTime(&t, start, stop); \
     }
 
-#define NUMBEROFALGORITHMS 4
+#define NUMBEROFALGORITHMS 5
 #define INIT_FUNCTIONS()                                                                           \
     typedef cudaError_t (*ptrToTimingFunction)(KeyT*, uint, uint, KeyT*, CachingDeviceAllocator&); \
     const char* namesOfTimingFunctions[NUMBEROFALGORITHMS] = {                                     \
+        "Sort TopK",                                                                               \
         "Radix Select",                                                                            \
         "Bitonic TopK",                                                                            \
         "Threshold TopK",                                                                          \
         "Imprecise Bitonic",                                                                       \
     };                                                                                             \
     ptrToTimingFunction arrayOfTimingFunctions[NUMBEROFALGORITHMS] = {                             \
+        &sortTopK<KeyT>,                                                                           \
         &radixSelectTopK<KeyT>,                                                                    \
         &bitonicTopK<KeyT>,                                                                        \
         &thresholdTopK<KeyT>,                                                                      \
         &impreciseBitonicTopK<KeyT>,                                                               \
     };
+#define SET_ALGORITHMS_RUN()                            \
+    {                                                   \
+        fill_n(algorithmsToRun, NUMBEROFALGORITHMS, 1); \
+        algorithmsToRun[0] = 0;                         \
+    }
 
 using namespace std;
 
@@ -108,11 +117,29 @@ void compareAlgorithms(uint size, uint k, uint numTests, uint* algorithmsToTest,
     // create the random generator.
     curandGenerator_t generator;
 
+#if NEED_ANALYSIS
+    KeyT* h_sort_vec = (KeyT*)malloc(sizeof(KeyT) * size);
+
+    uint total_topk_times[NUMBEROFALGORITHMS];  // 所有 numTests 个测试的结果中正确的 top-k 出现的总次数
+    double avg_topk_rate[NUMBEROFALGORITHMS];   // 所有 numTests 个测试结果中正确 top-k 的比例均值
+    fill_n(total_topk_times, NUMBEROFALGORITHMS, 0);
+
+    uint tolerance = 2;                                         // 评价指标容忍度
+    long int weight = ((tolerance * k * 2 - (k - 1)) * k) / 2;  // 评价指标标准化权重
+    long int sum_noWeight_analyze_1[NUMBEROFALGORITHMS];        // 所有 numTests 个无权评价指标之和
+    double avg_analyze_1[NUMBEROFALGORITHMS];                   // 所有 numTests 个有权评价指标的均值
+    fill_n(sum_noWeight_analyze_1, NUMBEROFALGORITHMS, 0);
+
+    bool res_error[NUMBEROFALGORITHMS];  // 结果中出现了原数据中没有的数，或者出现次数大于原数据中出现的次数，判定该算法出错
+    fill_n(res_error, NUMBEROFALGORITHMS, false);
+#endif
+
     printf("The distribution is: %s\n", namesOfGeneratingFunctions[generateType]);
     for (i = 0; i < numTests; i++) {
         // cudaDeviceReset();
         gettimeofday(&t1, NULL);
         seed = t1.tv_usec * t1.tv_sec;
+        srand(seed);
 
         for (m = 0; m < NUMBEROFALGORITHMS; m++) {
             runOrder[m] = m;
@@ -121,13 +148,19 @@ void compareAlgorithms(uint size, uint k, uint numTests, uint* algorithmsToTest,
 
         curandCreateGenerator(&generator, CURAND_RNG_PSEUDO_DEFAULT);
         curandSetPseudoRandomGeneratorSeed(generator, seed);
-        curandSetPseudoRandomGeneratorSeed(generator, 0);
+        // curandSetPseudoRandomGeneratorSeed(generator, 0);
 
-#if IS_PRINT_EVERY_TESTING
+#if NEED_PRINT_EVERY_TESTING
         printf("Running test %u of %u for size: %u and k: %u\n", i + 1, numTests, size, k);
 #endif
         // generate the random vector using the specified distribution
         arrayOfGenerators[generateType](d_vec, size, generator, g_allocator);
+        if (size == (uint)(2 << 30) / sizeof(KeyT)) {  // 2GB
+            // printf("sleep 100\n");
+            usleep(100000);                                   // sleep 100 ms
+        } else if (size == (uint)(1 << 30) / sizeof(KeyT)) {  // 1GB
+            usleep(50000);                                    // sleep 50 ms
+        }
 
         // KeyT* h_vec = new KeyT[size];
         // cudaMemcpy(h_vec, d_vec, size * sizeof(KeyT), cudaMemcpyDeviceToHost);
@@ -155,7 +188,7 @@ void compareAlgorithms(uint size, uint k, uint numTests, uint* algorithmsToTest,
                 } else if (size == (uint)(1 << 30) / sizeof(KeyT)) {  // 1GB
                     usleep(50000);                                    // sleep 50 ms
                 }
-#if IS_PRINT_EVERY_TESTING
+#if NEED_PRINT_EVERY_TESTING
                 printf("\tTESTING: %-2u %-20s runtime: %f ms\n", j, namesOfTimingFunctions[j], runtime);
 #endif
 
@@ -185,8 +218,40 @@ void compareAlgorithms(uint size, uint k, uint numTests, uint* algorithmsToTest,
                 cudaMemset(d_res, 0, k * sizeof(KeyT));
             }
         }
+
         curandDestroyGenerator(generator);
+
+#if NEED_ANALYSIS
+        // analyze
+        sort(d_vec_copy, size, g_allocator);
+        cudaMemcpy(h_sort_vec, d_vec_copy, sizeof(KeyT) * size, cudaMemcpyDeviceToHost);
+        // 前提：找到的结果数组已经按从大到小排列
+        for (j = 0; j < NUMBEROFALGORITHMS; j++) {
+            if (!res_error[j] && algorithmsToTest[j]) {
+                for (uint res_idx = 0, sort_idx = 0; res_idx < k; res_idx++) {
+                    while (sort_idx < size && h_sort_vec[sort_idx] != resultsArray[j][i][res_idx]) sort_idx++;
+                    if (sort_idx == size) {
+                        res_error[j] = true;
+                        break;
+                    } else {
+                        sum_noWeight_analyze_1[j] += (int)(tolerance * k) - (int)sort_idx;
+                        if (sort_idx < k) total_topk_times[j]++;
+                    }
+                }
+            }
+        }
+#endif
     }
+
+#if NEED_ANALYSIS
+    for (j = 0; j < NUMBEROFALGORITHMS; j++) {
+        if (!res_error[j] && algorithmsToTest[j]) {
+            avg_analyze_1[j] = sum_noWeight_analyze_1[j] / (weight * numTests);
+            avg_topk_rate[j] = total_topk_times[j] / (numTests * k);
+        }
+    }
+    free(h_sort_vec);
+#endif
 
     // calculate the statistical data
     fill_n(standardPerAlgorithm, NUMBEROFALGORITHMS, 0);
@@ -210,7 +275,7 @@ void compareAlgorithms(uint size, uint k, uint numTests, uint* algorithmsToTest,
         timesWon[winnerArray[i]]++;
     }
 
-#if IS_PRINT_EVERY_TESTING
+#if NEED_PRINT_EVERY_TESTING
     printf("\n\n");
 #endif
 
@@ -220,6 +285,9 @@ void compareAlgorithms(uint size, uint k, uint numTests, uint* algorithmsToTest,
     printf("%-20s %-15s %-15s %-15s", "algorithm", "minimum (ms)", "maximum (ms)", "average (ms)");
     if (numTests > 1) printf(" %-15s", "std dev");
     if (total_algorithms > 1) printf(" %-15s", "won times");
+#if NEED_ANALYSIS
+    printf(" %-15s %-15s", "top-k rate (%)", "analyze 1");
+#endif
     printf("\n");
     // print out data
     for (i = 0; i < NUMBEROFALGORITHMS; i++) {
@@ -228,12 +296,18 @@ void compareAlgorithms(uint size, uint k, uint numTests, uint* algorithmsToTest,
                    maxTimesPerAlgorithm[i], averageTimesPerAlgorithm[i]);
             if (numTests > 1) printf(" %-15f", standardPerAlgorithm[i]);
             if (total_algorithms > 1) printf(" %-15d", timesWon[i]);
+#if NEED_ANALYSIS
+            if (res_error[i])
+                printf(" %-15s %-15s", "ERROR", "ERROR");
+            else
+                printf(" %-15.2f %-15.3f", avg_topk_rate[i] * 100, avg_analyze_1[i]);
+#endif
             printf("\n");
         }
     }
     printf("\n");
 
-#if IS_PRINT_DIFF
+#if NEED_PRINT_DIFF
     if (algorithmsToTest[0]) {
         for (i = 0; i < numTests; i++) {
             for (j = 1; j < NUMBEROFALGORITHMS; j++) {
@@ -258,8 +332,8 @@ void compareAlgorithms(uint size, uint k, uint numTests, uint* algorithmsToTest,
 #endif
 
     // free memory
-    for (i = 0; i < numTests; i++)
-        for (j = 0; j < NUMBEROFALGORITHMS; j++)
+    for (j = 0; j < NUMBEROFALGORITHMS; j++)
+        for (i = 0; i < numTests; i++)
             delete[] resultsArray[j][i];
     cudaFree(d_vec);
     cudaFree(d_vec_copy);
@@ -271,10 +345,9 @@ void runTests(uint generateType, int K, uint startPower, uint stopPower, uint ti
     // Algorithms To Run
     // timeSort, timeRadixSelect, timeBitonicTopK
     uint algorithmsToRun[NUMBEROFALGORITHMS];
-    fill_n(algorithmsToRun, NUMBEROFALGORITHMS, 1);
-    uint size;
-    uint power;
-    for (size = (1 << startPower), power = startPower; power <= stopPower; size <<= 1, power++) {
+    SET_ALGORITHMS_RUN();
+    for (uint power = startPower; power <= stopPower; power++) {
+        uint size = 1 << power;
         printf("NOW STARTING A NEW TOP-K [size: 2^%u (%u), k: %d]\n", power, size, K);
         compareAlgorithms<KeyT>(size, K, timesToTestEachK, algorithmsToRun, generateType);
     }
