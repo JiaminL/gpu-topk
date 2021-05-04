@@ -62,6 +62,7 @@
     {                                                   \
         fill_n(algorithmsToRun, NUMBEROFALGORITHMS, 1); \
         algorithmsToRun[0] = 0;                         \
+        algorithmsToRun[4] = 0;                         \
     }
 
 using namespace std;
@@ -155,7 +156,7 @@ void compareAlgorithms(uint size, uint k, uint numTests, uint* algorithmsToTest,
 #endif
         // generate the random vector using the specified distribution
         arrayOfGenerators[generateType](d_vec, size, generator, g_allocator);
-        if (generateType == 1 || generateType == 2) {  // 如果是升序或降序（需要申请临时空间用来排序）
+        if (generateType == 1 || generateType == 2) {      // 如果是升序或降序（需要申请临时空间用来排序）
             if (size == (uint)(2 << 30) / sizeof(KeyT)) {  // 2GB
                 // printf("sleep 100\n");
                 usleep(50000);                                    // sleep 50 ms
@@ -233,6 +234,7 @@ void compareAlgorithms(uint size, uint k, uint numTests, uint* algorithmsToTest,
         for (j = 0; j < NUMBEROFALGORITHMS; j++) {
             if (!res_error[j] && algorithmsToTest[j]) {
                 for (uint res_idx = 0, sort_idx = 0; res_idx < k; res_idx++) {
+                    if (h_sort_vec[sort_idx] != resultsArray[j][i][res_idx] && sort_idx >= 1 && h_sort_vec[sort_idx - 1] == resultsArray[j][i][res_idx]) continue;
                     while (sort_idx < size && h_sort_vec[sort_idx] != resultsArray[j][i][res_idx]) sort_idx++;
                     if (sort_idx == size) {
                         res_error[j] = true;
@@ -241,6 +243,7 @@ void compareAlgorithms(uint size, uint k, uint numTests, uint* algorithmsToTest,
                         sum_noWeight_analyze_1[j] += (int)(tolerance * k) - (int)sort_idx;
                         if (sort_idx < k) total_topk_times[j]++;
                     }
+                    sort_idx++;
                 }
             }
         }
@@ -250,8 +253,8 @@ void compareAlgorithms(uint size, uint k, uint numTests, uint* algorithmsToTest,
 #if NEED_ANALYSIS
     for (j = 0; j < NUMBEROFALGORITHMS; j++) {
         if (!res_error[j] && algorithmsToTest[j]) {
-            avg_analyze_1[j] = sum_noWeight_analyze_1[j] / (weight * numTests);
-            avg_topk_rate[j] = total_topk_times[j] / (numTests * k);
+            avg_analyze_1[j] = sum_noWeight_analyze_1[j] / (double)(weight * numTests);
+            avg_topk_rate[j] = total_topk_times[j] / (double)(numTests * k);
         }
     }
     free(h_sort_vec);
@@ -304,7 +307,7 @@ void compareAlgorithms(uint size, uint k, uint numTests, uint* algorithmsToTest,
             if (res_error[i])
                 printf(" %-15s %-15s", "ERROR", "ERROR");
             else
-                printf(" %-15.2f %-15.3f", avg_topk_rate[i] * 100, avg_analyze_1[i]);
+                printf(" %-15.4f %-15f", avg_topk_rate[i] * 100, avg_analyze_1[i]);
 #endif
             printf("\n");
         }
