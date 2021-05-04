@@ -10,6 +10,8 @@
 using namespace std;
 using namespace cub;
 
+#define MAX_SHARE_MEM_SIZE 49152  // Geforce RTX 2070 Super 每个 block 最大的 share memory 大小（单位：byte）
+
 template <typename KeyT>
 cudaError_t bitonicTopK(KeyT* d_keys_in, unsigned int num_items, unsigned int k, KeyT* d_keys_out,
                         CachingDeviceAllocator& g_allocator) {
@@ -24,8 +26,10 @@ cudaError_t bitonicTopK(KeyT* d_keys_in, unsigned int num_items, unsigned int k,
     int share_mem_size;
 
     int wg_size = max(64, k);
+    int max_reduce_times = log2_32(MAX_SHARE_MEM_SIZE / sizeof(KeyT) * 32 / 33 / wg_size);
+    bool share_too_small = max_reduce_times < NUM_ELEM_BITSHIFT;
 
-    if (num_items >= (wg_size << NUM_ELEM_BITSHIFT)) {
+    if (!share_too_small && num_items >= (wg_size << NUM_ELEM_BITSHIFT)) {
         // 如果 num_items >= 16 * wg_size，每个 kernel 将进行 4 次 reduce
         numThreads >>= NUM_ELEM_BITSHIFT;  // Each thread processes 16 elements.
         share_mem_size = ((NUM_ELEM_PT * wg_size * 33) / 32) * sizeof(KeyT);
@@ -35,14 +39,27 @@ cudaError_t bitonicTopK(KeyT* d_keys_in, unsigned int num_items, unsigned int k,
             numThreads >>= NUM_ELEM_BITSHIFT;  // Each thread processes 16 elements.
             Bitonic_TopKReduce<KeyT><<<numThreads / wg_size, wg_size, share_mem_size>>>(d_keys_in, k, klog2, NUM_ELEM_PT);
         }
-    } else if (num_items > wg_size) {
+
+    } else if (!share_too_small && num_items > wg_size) {
         // 如果 wg_size < num_items < 16 * wg_size，local sort 每个线程处理 2 个数据，然后进行一次 reduce
         numThreads >>= 1;  // Each thread processes 2 elements.
         share_mem_size = ((2 * wg_size * 33) / 32) * sizeof(KeyT);
         Bitonic_TopKLocalSort<KeyT><<<numThreads / wg_size, wg_size, share_mem_size>>>(d_keys_in, k, klog2);
+
+    } else if (share_too_small && num_items > wg_size && max_reduce_times >= 1) {
+        // share memory 不足以放 4 次 reduce所需的数据，并且至少可以做一次 reduce
+        numThreads >>= 1;  // Each thread processes 2 elements.
+        share_mem_size = ((2 * wg_size * 33) / 32) * sizeof(KeyT);
+        Bitonic_TopKLocalSort<KeyT><<<numThreads / wg_size, wg_size, share_mem_size>>>(d_keys_in, k, klog2);
+        
+        while (numThreads >= (wg_size << max_reduce_times)) {
+            numThreads >>= max_reduce_times;  // Each thread processes 2^max_reduce_times elements.
+            share_mem_size = (((1 << max_reduce_times) * wg_size * 33) / 32) * sizeof(KeyT);
+            Bitonic_TopKReduce<KeyT><<<numThreads / wg_size, wg_size, share_mem_size>>>(d_keys_in, k, klog2, max_reduce_times);
+        }
     }
 
-    if (numThreads > wg_size) {
+    if (numThreads > wg_size && max_reduce_times >= 1) {
         // 如果剩下的数据还是比 wg_size 大，继续 reduce，次数为 reduce_times
         int reduce_times = log2_32(numThreads / wg_size);
         numThreads >>= reduce_times;
