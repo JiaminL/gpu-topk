@@ -211,12 +211,16 @@ cudaError_t thresholdTopK(KeyT* d_keys_in, unsigned int num_items, unsigned int 
 
         // 如果 h_new_len < k，从 d_keys_in 的前 k * 8 个元素里面寻找 top-k，否则，就从 h_keys_in 中前 d_keys_in 中寻找 top-k
         num_items = (h_new_len < k) ? (k << 3) : h_new_len;  // 由于 sub_log >= 8，一定有 k * 8 < num_items
+        // <to do>: 如果 h_new_len < k，可能会让返回值中某些数出现次数大于原数据集中出现次数
 
         // 在搜索的总数据量小于等于 2^19 时，bitonic 有更好的性能（bitonic 的 k 最大只能到 512）
         uint log2_new_len = log2_32(h_new_len);
         if (k <= 512 && log2_new_len < 19) {
             // 使用 bitonic top-k 算法，搜索长度必须是 2 的幂
             num_items = (h_new_len - (1 << log2_new_len)) ? (2 << log2_new_len) : (1 << log2_new_len);
+            if (num_items - h_new_len)
+                cudaMemset(d_keys_in + h_new_len, 0, sizeof(KeyT) * (num_items - h_new_len));  
+                // <to do>: 如果数据集中top-k有负数会出问题
             use_bitonic = true;
         }
     } else {
