@@ -125,10 +125,10 @@ void compareAlgorithms(uint size, uint k, uint numTests, uint* algorithmsToTest,
     double avg_topk_rate[NUMBEROFALGORITHMS];   // 所有 numTests 个测试结果中正确 top-k 的比例均值
     fill_n(total_topk_times, NUMBEROFALGORITHMS, 0);
 
-    uint tolerance = 2;                                         // 评价指标容忍度
-    long int weight = ((tolerance * k * 2 - (k - 1)) * k) / 2;  // 评价指标标准化权重
-    long int sum_noWeight_analyze_1[NUMBEROFALGORITHMS];        // 所有 numTests 个无权评价指标之和
-    double avg_analyze_1[NUMBEROFALGORITHMS];                   // 所有 numTests 个有权评价指标的均值
+    uint tolerance = 2;                                                   // 评价指标容忍度
+    long int weight = ((long int)(tolerance * k * 2 - (k - 1)) * k) / 2;  // 评价指标标准化权重
+    long int sum_noWeight_analyze_1[NUMBEROFALGORITHMS];                  // 所有 numTests 个无权评价指标之和
+    double avg_analyze_1[NUMBEROFALGORITHMS];                             // 所有 numTests 个有权评价指标的均值
     fill_n(sum_noWeight_analyze_1, NUMBEROFALGORITHMS, 0);
 
     bool res_error[NUMBEROFALGORITHMS];  // 结果中出现了原数据中没有的数，或者出现次数大于原数据中出现的次数，判定该算法出错
