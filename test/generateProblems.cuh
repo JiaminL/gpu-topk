@@ -11,7 +11,7 @@ using namespace cub;
 using namespace std;
 
 template <typename KeyT>
-void sort_keys(KeyT* d_vec, const unsigned int num_keys, CachingDeviceAllocator& g_allocator) {
+void sort_keys(KeyT* d_vec, const unsigned int num_keys, CachingDeviceAllocator& g_allocator, bool is_inc) {
     // Allocate device memory for input/output
     DoubleBuffer<KeyT> d_keys;
     d_keys.d_buffers[0] = d_vec;
@@ -20,12 +20,21 @@ void sort_keys(KeyT* d_vec, const unsigned int num_keys, CachingDeviceAllocator&
     // Allocate temporary storage
     size_t temp_storage_bytes = 0;
     void* d_temp_storage = NULL;
-    CubDebugExit(DeviceRadixSort::SortKeys(d_temp_storage, temp_storage_bytes, d_keys, num_keys));
+    if (is_inc) {
+        CubDebugExit(DeviceRadixSort::SortKeys(d_temp_storage, temp_storage_bytes, d_keys, num_keys));
+    } else {
+        CubDebugExit(DeviceRadixSort::SortKeysDescending(d_temp_storage, temp_storage_bytes, d_keys, num_keys));
+    }
+
     CubDebugExit(g_allocator.DeviceAllocate(&d_temp_storage, temp_storage_bytes));
 
     // Sort
-    CubDebugExit(DeviceRadixSort::SortKeys(d_temp_storage, temp_storage_bytes, d_keys, num_keys));
-
+    if (is_inc) {
+        CubDebugExit(DeviceRadixSort::SortKeys(d_temp_storage, temp_storage_bytes, d_keys, num_keys));
+    } else {
+        CubDebugExit(DeviceRadixSort::SortKeysDescending(d_temp_storage, temp_storage_bytes, d_keys, num_keys));
+    }
+    
     // Copy results for verification. GPU-side part is done.
     if (d_keys.Current() != d_vec) {
         CubDebugExit(cudaMemcpy(d_vec, d_keys.Current(), sizeof(KeyT) * num_keys, cudaMemcpyDeviceToDevice));
@@ -51,13 +60,13 @@ void generateUniformUints(uint* d_vec, uint num_keys, curandGenerator_t generato
 void generateSortedIncreasingUints(uint* d_vec, uint num_keys, curandGenerator_t gen,
                                    CachingDeviceAllocator& g_allocator) {
     curandGenerate(gen, d_vec, num_keys);
-    sort_keys<uint>(d_vec, num_keys, g_allocator);
+    sort_keys<uint>(d_vec, num_keys, g_allocator, true);
 }
 
 void generateSortedDecreasingUints(uint* d_vec, uint num_keys, curandGenerator_t gen,
                                    CachingDeviceAllocator& g_allocator) {
     curandGenerate(gen, d_vec, num_keys);
-    sort_keys<uint>(d_vec, num_keys, g_allocator);
+    sort_keys<uint>(d_vec, num_keys, g_allocator, false);
 }
 
 #define NUMBEROFUINTDISTRIBUTIONS 3
@@ -77,13 +86,13 @@ void generateUniformFloats(float* d_vec, uint num_keys, curandGenerator_t genera
 void generateSortedIncreasingFloats(float* d_vec, uint num_keys, curandGenerator_t generator,
                                     CachingDeviceAllocator& g_allocator) {
     curandGenerateUniform(generator, d_vec, num_keys);
-    sort_keys<float>(d_vec, num_keys, g_allocator);
+    sort_keys<float>(d_vec, num_keys, g_allocator, true);
 }
 
 void generateSortedDecreasingFloats(float* d_vec, uint num_keys, curandGenerator_t generator,
                                     CachingDeviceAllocator& g_allocator) {
     curandGenerateUniform(generator, d_vec, num_keys);
-    sort_keys<float>(d_vec, num_keys, g_allocator);
+    sort_keys<float>(d_vec, num_keys, g_allocator, false);
 }
 
 // void generateBucketKillerFloats(float* d_vec, uint num_keys, curandGenerator_t generator) {
