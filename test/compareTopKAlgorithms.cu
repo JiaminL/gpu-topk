@@ -12,6 +12,8 @@
 #include <algorithm>
 #include <numeric>
 #include <unistd.h>
+#include <getopt.h>
+#include <string.h>
 
 #include "printFunctions.cuh"
 #include "generateProblems.cuh"
@@ -69,8 +71,9 @@ using namespace std;
 
 CachingDeviceAllocator g_allocator(true);  // Caching allocator for device memory
 
-template <typename KeyT>
-void compareAlgorithms(uint size, uint k, uint numTests, uint* algorithmsToTest, uint generateType) {
+template <typename KeyT, typename FuncType>
+void compareAlgorithms(uint size, uint k, uint numTests, uint* algorithmsToTest, double* parameter,
+                       char* generateName, FuncType generateFunc, bool genNeedSort) {
     KeyT* d_vec;
     KeyT* d_vec_copy;
     KeyT* d_res;
@@ -97,15 +100,8 @@ void compareAlgorithms(uint size, uint k, uint numTests, uint* algorithmsToTest,
 
     SETUP_TIMING()
 
-    typedef void (*ptrToGeneratingFunction)(KeyT*, uint, curandGenerator_t, CachingDeviceAllocator&);
     // these are the functions that can be called
     INIT_FUNCTIONS()
-
-    ptrToGeneratingFunction* arrayOfGenerators;
-    const char** namesOfGeneratingFunctions;
-    // this is the array of names of functions that generate problems of this type, ie float, double, or uint
-    namesOfGeneratingFunctions = returnNamesOfGenerators<KeyT>();
-    arrayOfGenerators = (ptrToGeneratingFunction*)returnGenFunctions<KeyT>();
 
     // zero out the totals and times won
     bzero(totalTimesPerAlgorithm, NUMBEROFALGORITHMS * sizeof(uint));
@@ -135,7 +131,7 @@ void compareAlgorithms(uint size, uint k, uint numTests, uint* algorithmsToTest,
     fill_n(res_error, NUMBEROFALGORITHMS, false);
 #endif
 
-    printf("The distribution is: %s\n", namesOfGeneratingFunctions[generateType]);
+    printf("The distribution is: %s\n", generateName);
     for (i = 0; i < numTests; i++) {
         // cudaDeviceReset();
         gettimeofday(&t1, NULL);
@@ -155,8 +151,9 @@ void compareAlgorithms(uint size, uint k, uint numTests, uint* algorithmsToTest,
         printf("Running test %u of %u for size: %u and k: %u\n", i + 1, numTests, size, k);
 #endif
         // generate the random vector using the specified distribution
-        arrayOfGenerators[generateType](d_vec, size, generator, g_allocator);
-        if (generateType == 1 || generateType == 2) {      // 如果是升序或降序（需要申请临时空间用来排序）
+        generateFunc(d_vec, size, generator, g_allocator, parameter);
+
+        if (genNeedSort) {                                 // 如果是升序或降序（需要申请临时空间用来排序）
             if (size == (uint)(2 << 30) / sizeof(KeyT)) {  // 2GB
                 // printf("sleep 100\n");
                 usleep(50000);                                    // sleep 50 ms
@@ -167,6 +164,7 @@ void compareAlgorithms(uint size, uint k, uint numTests, uint* algorithmsToTest,
 
         // KeyT* h_vec = new KeyT[size];
         // cudaMemcpy(h_vec, d_vec, size * sizeof(KeyT), cudaMemcpyDeviceToHost);
+        // cout << h_vec[0] << " " << h_vec[1] << " " << h_vec[2] << " " << h_vec[3] << " " << h_vec[4] << " " << endl;
         // h_vec[0] = (KeyT)(-1034);
         // cudaMemcpy(d_vec, h_vec, size * sizeof(KeyT), cudaMemcpyHostToDevice);
         // delete[] h_vec;
@@ -348,56 +346,247 @@ void compareAlgorithms(uint size, uint k, uint numTests, uint* algorithmsToTest,
 }
 
 template <typename KeyT>
-void runTests(uint generateType, int K, uint startPower, uint stopPower, uint timesToTestEachK = 3) {
+void runTests(uint k, uint startPower, uint stopPower, uint testCount, double* parameter,
+              DataType type, Distribution distribution, SortType sort) {
     // Algorithms To Run
-    // timeSort, timeRadixSelect, timeBitonicTopK
     uint algorithmsToRun[NUMBEROFALGORITHMS];
     SET_ALGORITHMS_RUN();
+
+    // 获得对应的生成随机数的函数
+    typedef void (*ptrToGeneratingFunction)(KeyT*, uint, curandGenerator_t, CachingDeviceAllocator&, double*);
+    ptrToGeneratingFunction generateFunc = (ptrToGeneratingFunction)returnGenFunction<KeyT>(distribution, sort);
+    char* generateName = returnNameOfGenerators(type, distribution, sort);
+    bool genNeedSort = (sort != NO);
+
     for (uint power = startPower; power <= stopPower; power++) {
         uint size = 1 << power;
-        printf("NOW STARTING A NEW TOP-K [size: 2^%u (%u), k: %d]\n", power, size, K);
-        compareAlgorithms<KeyT>(size, K, timesToTestEachK, algorithmsToRun, generateType);
+        printf("NOW STARTING A NEW TOP-K [size: 2^%u (%u), k: %d]\n", power, size, k);
+        // compareAlgorithms<KeyT>(size, k, testCount, algorithmsToRun, 0);
+        // compareAlgorithms<KeyT>(size, k, testCount, algorithmsToRun, parameter, generateName, genNeedSort);
+        compareAlgorithms<KeyT, ptrToGeneratingFunction>(size, k, testCount, algorithmsToRun, parameter, generateName, generateFunc, genNeedSort);
     }
+
+    free(generateName);
+}
+
+void getParameters(int argc, char** argv,
+                   uint& u_k, uint& u_start_power, uint& u_stop_power, uint& u_test_count, double* parameter,
+                   DataType& type, Distribution& distribution, SortType& sort) {
+    const int max_4b_power = 29;
+    const int max_8b_power = 28;
+
+    int k = -1, start_power = -1, stop_power = -1;
+    int test_count = 3;
+    parameter[0] = 0;
+    parameter[1] = 1;
+    type = UINT;
+    distribution = UNIFORM;
+    sort = NO;
+
+    enum Error { NO_ERROR,
+                 TYPE_ERROR,
+                 DISTRIBUTION_ERROR,
+                 SORT_ERROR,
+                 TESTCOUNT_ERROR,
+                 K_ERROR,
+                 N_ERROR } error = NO_ERROR;
+
+    static struct option long_options[] =
+        {
+            {"type", 1, NULL, 't'},
+            {"distribution", 1, NULL, 'd'},
+            {"testcount", 1, NULL, 'c'},
+            {"p1", 1, NULL, '1'},
+            {"p2", 1, NULL, '2'},
+            {"sort", 1, NULL, 's'},
+            {"startpower", 1, NULL, 'a'},
+            {"stoppower", 1, NULL, 'b'},
+            {NULL, 0, NULL, 0},
+        };
+    int ch;
+    while ((ch = getopt_long(argc, argv, "t:d:s:k:a:b:c:1:2:", long_options, NULL)) != -1) {
+        if (error != NO_ERROR) break;
+        switch (ch) {
+            case 't':  // type
+                if (strcmp(optarg, "uint") == 0)
+                    type = UINT;
+                else if (strcmp(optarg, "ulong") == 0)
+                    type = ULONG;
+                else if (strcmp(optarg, "int") == 0)
+                    type = INT;
+                else if (strcmp(optarg, "long") == 0)
+                    type = LONG;
+                else if (strcmp(optarg, "float") == 0)
+                    type = FLOAT;
+                else if (strcmp(optarg, "double") == 0)
+                    type = DOUBLE;
+                else
+                    error = TYPE_ERROR;
+                break;
+            case 'd':  // distribution
+                if (strcmp(optarg, "uniform") == 0)
+                    distribution = UNIFORM;
+                else if (strcmp(optarg, "poisson") == 0)
+                    distribution = POISSON;
+                else if (strcmp(optarg, "normal") == 0)
+                    distribution = NORMAL;
+                else if (strcmp(optarg, "lognormal") == 0)
+                    distribution = LOG_NORMAL;
+                else
+                    error = DISTRIBUTION_ERROR;
+                break;
+            case 's':  // sort
+                if (strcmp(optarg, "inc") == 0)
+                    sort = INC;
+                else if (strcmp(optarg, "dec") == 0)
+                    sort = DEC;
+                else
+                    error = SORT_ERROR;
+                break;
+            case 'k':  // k
+                k = atoi(optarg);
+                if (k <= 0)
+                    error = K_ERROR;
+                break;
+            case 'c':  // test_count
+                test_count = atoi(optarg);
+                if (test_count <= 0)
+                    error = TESTCOUNT_ERROR;
+                break;
+            case 'a':  // log_n begin
+                start_power = atoi(optarg);
+                if (start_power < 0)
+                    error = N_ERROR;
+                break;
+            case 'b':  // log_n end
+                stop_power = atoi(optarg);
+                if (stop_power < 0)
+                    error = N_ERROR;
+                break;
+            case '1':  // parameter 1
+                parameter[0] = atof(optarg);
+                break;
+            case '2':  // parameter 2
+                parameter[1] = atof(optarg);
+            case '?':  // 未定义的选项
+                printf("unknown option \n");
+                break;
+            default:
+                printf("default \n");
+        }
+    }
+
+    // deal error
+    if (error == TYPE_ERROR) {
+        cerr << "error: 仅支持类型：int, long, uint, ulong, float, double\n";
+        exit(1);
+    }
+    if (error != DISTRIBUTION_ERROR &&
+        ((type == UINT && distribution != UNIFORM && distribution != POISSON) ||
+         (type == ULONG && distribution != UNIFORM) ||
+         (type == INT && distribution != UNIFORM) ||
+         (type == LONG && distribution != UNIFORM) ||
+         (type == FLOAT && distribution != UNIFORM && distribution != NORMAL && distribution != LOG_NORMAL) ||
+         (type == DOUBLE && distribution != UNIFORM && distribution != NORMAL && distribution != LOG_NORMAL))) {
+        error = DISTRIBUTION_ERROR;
+    }
+    if (error == DISTRIBUTION_ERROR) {
+        if (type == UINT) cerr << "error: uint（unsigned int）类型仅支持均匀分布 uniform, 泊松分布 possion\n";
+        if (type == ULONG) cerr << "error: ulong（unsigned long long）类型仅支持均匀分布 uniform\n";
+        if (type == INT) cerr << "error: int 类型仅支持均匀分布 uniform\n";
+        if (type == LONG) cerr << "error: long（long long）类型仅支持均匀分布 uniform\n";
+        if (type == FLOAT) cerr << "error: float 类型仅支持正态分布 normal, 对数正态分布 lognormal, U(0,1)均匀分布 uniform\n";
+        if (type == DOUBLE) cerr << "error: double 类型仅支持正态分布 normal, 对数正态分布 lognormal, U(0,1)均匀分布 uniform\n";
+        exit(1);
+    }
+    if (error == SORT_ERROR) {
+        cerr << "error: 有两种排序：增序 inc，降序 dec\n";
+        exit(1);
+    }
+    if (k == -1) {
+        cerr << "error: 请输入 k 值，如: -k 32\n";
+        exit(1);
+    }
+    if (error == K_ERROR) {
+        cerr << "error: k 值必须为正整数\n";
+        exit(1);
+    }
+    if (error == TESTCOUNT_ERROR) {
+        cerr << "error: testcount 必须为正整数\n";
+        exit(1);
+    }
+
+    if (error == N_ERROR) {
+        cerr << "error: start_power 与 stop_power 须为正整数\n";
+        exit(1);
+    }
+    if (start_power == -1) start_power = log2_32(k) + 1;  // 未设置 start_power
+    if (start_power <= log2_32(k)) {
+        cerr << "error: 2^startpower 必须大于 k\n";
+        exit(1);
+    }
+    int max_power = (type == UINT || type == FLOAT || type == INT) ? max_4b_power : max_8b_power;  // 未设置 stop_power
+    if (stop_power == -1) stop_power = max_power;
+    if (stop_power > max_power) {
+        cerr << "error: 2^stoppower 个该类型数据，已超过 GPU 能承载的最大数量\n";
+        exit(1);
+    }
+    if (start_power > stop_power) {
+        if (start_power == log2_32(k) + 1 && stop_power == max_power)
+            cerr << "error: k 值过大\n";
+        else if (stop_power <= log2_32(k))
+            cerr << "error: 2^stoppower 必须大于 k\n";
+        else
+            cerr << "error: startpower 不应大于 stoppower\n";
+        exit(1);
+    }
+
+    switch (distribution) {
+        case POISSON:
+            if (parameter[0] <= 0) {
+                cerr << "error: POISSON 分布参数 p1 (lambda) 须大于 0\n";
+                exit(1);
+            }
+            break;
+        case NORMAL:
+            if (parameter[1] < 0) {
+                cerr << "error: NORMAL 分布参数 p2 (std dev) 须大于 0\n";
+                exit(1);
+            }
+    }
+    u_k = (uint)k;
+    u_start_power = (uint)start_power;
+    u_stop_power = (uint)stop_power;
+    u_test_count = (uint)test_count;
 }
 
 int main(int argc, char** argv) {
-    uint testCount;
-    int K;
-    uint type, distributionType, startPower, stopPower;
-    if (argc == 7) {
-        type = atoi(argv[1]);
-        distributionType = atoi(argv[2]);
-        K = atoi(argv[3]);
-        testCount = atoi(argv[4]);
-        startPower = atoi(argv[5]);
-        stopPower = atoi(argv[6]);
-    } else {
-        printf("Please enter the type of value you want to test:\n1-float\n2-double\n3-uint\n");
-        cin >> type;
-        printf("Please enter distribution type: ");
-        cin >> distributionType;
-        printf("Please enter K: ");
-        cin >> K;
-        printf("Please enter number of tests to run per K: ");
-        cin >> testCount;
-        printf("Please enter start power (dataset size starts at 2^start)(max val: 29): ");
-        cin >> startPower;
-        printf("Please enter stop power (dataset size stops at 2^stop)(max val: 29): ");
-        cin >> stopPower;
-    }
+    uint k, startPower, stopPower, testCount;
+    double parameter[2];
+    DataType type;
+    Distribution distribution;
+    SortType sort;
+    getParameters(argc, argv, k, startPower, stopPower, testCount, parameter, type, distribution, sort);
 
     switch (type) {
-        case 1:
-            runTests<float>(distributionType, K, startPower, stopPower, testCount);
+        case UINT:
+            runTests<uint>(k, startPower, stopPower, testCount, parameter, type, distribution, sort);
             break;
-        case 2:
-            runTests<double>(distributionType, K, startPower, stopPower, testCount);
+        case ULONG:
+            // 不知道为什么，类型写成 unsigned long long 就编译报错
+            runTests<unsigned long>(k, startPower, stopPower, testCount, parameter, type, distribution, sort);
             break;
-        case 3:
-            runTests<unsigned int>(distributionType, K, startPower, stopPower, testCount);
+        case INT:
+            runTests<int>(k, startPower, stopPower, testCount, parameter, type, distribution, sort);
             break;
-        default:
-            printf("You entered and invalid option, now exiting\n");
+        case LONG:
+            runTests<long>(k, startPower, stopPower, testCount, parameter, type, distribution, sort);
+            break;
+        case FLOAT:
+            runTests<float>(k, startPower, stopPower, testCount, parameter, type, distribution, sort);
+            break;
+        case DOUBLE:
+            runTests<double>(k, startPower, stopPower, testCount, parameter, type, distribution, sort);
             break;
     }
 
