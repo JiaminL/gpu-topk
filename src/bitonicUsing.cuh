@@ -507,12 +507,330 @@ __global__ void Bitonic_TopKLocalSortInPlace(T* data, const int k, const int klo
     // 最终输出，一系列长度k的双调序列，总数据量：原数据的 1/16
 }
 
-// (reduce_times ∈ [1, NUM_ELEM_BITSHIFT]，如果超出这个范围，视为最近的边界)
-// 每个 block 处理数据：(2 ^ reduce_times) * blockDim.x 的一系列长度为 k 的双调序列
-//           处理结果：经历 reduce_times 次的 merge 与 reduce 之后，获得长度为 blockDim.x 的一系列长度为 k 的双调序列
-// (blockDim.x、k 都为 2 的幂，且 blockDim.x >= k)
 template <typename T>
-__global__ void Bitonic_TopKReduce(T* data, const int k, const int klog2, const int reduce_times) {
+__global__ void Bitonic_TopKReduceOneTime(T* data, const int k, const int klog2) {
+    // Shared mem size is determined by the host app at run time.
+    // For n elements, we have n * 33/32 shared memory.
+    // We use this to break bank conflicts.
+    SharedMemory<T> smem;
+    T* sdata = smem.getPointer();
+    T *in = data, *out = data;
+
+    const int t = threadIdx.x;  // index in workgroup
+    const int wg = blockDim.x;  // workgroup size = block size, power of 2
+    const int gid = blockIdx.x;
+
+    int length, inc, low, dir, tCur;
+    bool reverse;
+
+    T x[4];  // 虽然平均每个线程只需处理两个数，但是，merge 排序时block前一半线程需要用到 RUN_4(X)，即前一半线程需要处理 4 个数据
+
+    in += 2 * gid * wg;
+    tCur = t << 1;
+    for (int i = 0; i < 2; i++) x[i] = in[tCur + i];
+    for (int i = 0; i < 2; i++) set(sdata, tCur + i, x[i]);
+
+    __syncthreads();
+
+    // Step 1: Complete the remaining steps to create sorted sequences of length k.
+    int mod;
+    unsigned int mask;
+
+    // Step 7: Construct sorted sequence of length k from bitonic sequence of length k.
+    length = k >> 1;
+    dir = length << 1;
+    // Loop on comparison distance (between keys)
+    inc = length;
+    mod = inc;
+    mask = ~(NUM_ELEM_PT / (4) - 1);
+    while ((mod & mask) != 0) mod >>= (NUM_ELEM_BITSHIFT - 2);
+
+    if (mod & 1) {
+        RUN_2(8)
+        __syncthreads();
+    }
+    while (inc > 0) {
+        if (t < (wg >> 1)) {
+            RUN_4(4)
+        } else {
+            inc >>= 2;
+        }
+        __syncthreads();
+    }
+
+    // Step 8: Reduce size again by 2.
+    out += (NUM_ELEM_PT / 16) * gid * wg;
+    tCur = ((t >> klog2) << (klog2 + 1)) + (t & (k - 1));
+    for (int j = 0; j < NUM_GROUPS / 8; j++) {
+        T x0 = get(sdata, 2 * wg * j + tCur);
+        T x1 = get(sdata, 2 * wg * j + tCur + k);
+        out[wg * j + t] = max(x0, x1);
+    }
+}
+
+template <typename T>
+__global__ void Bitonic_TopKReduceTwoTimes(T* data, const int k, const int klog2) {
+    // Shared mem size is determined by the host app at run time.
+    // For n elements, we have n * 33/32 shared memory.
+    // We use this to break bank conflicts.
+    SharedMemory<T> smem;
+    T* sdata = smem.getPointer();
+    T *in = data, *out = data;
+
+    const int t = threadIdx.x;  // index in workgroup
+    const int wg = blockDim.x;  // workgroup size = block size, power of 2
+    const int gid = blockIdx.x;
+
+    int length, inc, low, dir, tCur;
+    bool reverse;
+
+    T x[8];  // 虽然平均每个线程只需处理4个数，但是，merge排序时block前一半线程需要用到RUN_8(X)，即前一半线程需要处理8个数据
+
+    in += 4 * gid * wg;
+    tCur = t << 2;
+    for (int i = 0; i < 4; i++) x[i] = in[tCur + i];
+    for (int i = 0; i < 4; i++) set(sdata, tCur + i, x[i]);
+
+    __syncthreads();
+
+    // Step 1: Complete the remaining steps to create sorted sequences of length k.
+    int mod;
+    unsigned int mask;
+
+    // Step 5: Construct sorted sequence of length k from bitonic sequence of length k.
+    length = k >> 1;
+    dir = length << 1;
+    // Loop on comparison distance (between keys)
+    inc = length;
+    mod = inc;
+    mask = ~(NUM_ELEM_PT / (2) - 1);
+    while ((mod & mask) != 0) mod >>= (NUM_ELEM_BITSHIFT - 1);
+
+#if NUM_ELEM_PT > 4
+    if (mod & 1) {
+        RUN_2(4)
+        __syncthreads();
+    }
+#if NUM_ELEM_PT > 8
+    if (mod & 2) {
+        RUN_4(4)
+        __syncthreads();
+    }
+    while (inc > 2) {
+        if (t < (wg >> 1)) {
+            RUN_8(2)
+        } else {
+            inc >>= 3;
+        }
+        __syncthreads();
+    }
+#else
+    while (inc > 1) {
+        RUN_4(4)
+        __syncthreads();
+    }
+#endif  // NUM_ELEM_PT > 16
+#else
+    while (inc > 0) {
+        RUN_2(4)
+        __syncthreads();
+    }
+#endif  // NUM_ELEM_PT > 8 while (inc > 0)
+
+    // Step 6: Reduce size again by 2.
+    REDUCE(4)
+    __syncthreads();
+    // End of Step 6;
+
+    // Step 7: Construct sorted sequence of length k from bitonic sequence of length k.
+    length = k >> 1;
+    dir = length << 1;
+    // Loop on comparison distance (between keys)
+    inc = length;
+    mod = inc;
+    mask = ~(NUM_ELEM_PT / (4) - 1);
+    while ((mod & mask) != 0) mod >>= (NUM_ELEM_BITSHIFT - 2);
+
+    if (mod & 1) {
+        RUN_2(8)
+        __syncthreads();
+    }
+    while (inc > 0) {
+        if (t < (wg >> 1)) {
+            RUN_4(4)
+        } else {
+            inc >>= 2;
+        }
+        __syncthreads();
+    }
+
+    // Step 8: Reduce size again by 2.
+    out += (NUM_ELEM_PT / 16) * gid * wg;
+    tCur = ((t >> klog2) << (klog2 + 1)) + (t & (k - 1));
+    for (int j = 0; j < NUM_GROUPS / 8; j++) {
+        T x0 = get(sdata, 2 * wg * j + tCur);
+        T x1 = get(sdata, 2 * wg * j + tCur + k);
+        out[wg * j + t] = max(x0, x1);
+    }
+}
+
+template <typename T>
+__global__ void Bitonic_TopKReduceThreeTimes(T* data, const int k, const int klog2) {
+    // Shared mem size is determined by the host app at run time.
+    // For n elements, we have n * 33/32 shared memory.
+    // We use this to break bank conflicts.
+    SharedMemory<T> smem;
+    T* sdata = smem.getPointer();
+    T *in = data, *out = data;
+
+    const int t = threadIdx.x;  // index in workgroup
+    const int wg = blockDim.x;  // workgroup size = block size, power of 2
+    const int gid = blockIdx.x;
+
+    int length, inc, low, dir, tCur;
+    bool reverse;
+
+    T x[16];  // 虽然平均每个线程只需处理8个数，但是，merge排序时block前一半线程需要用到RUN_16(X)，即前一半线程需要处理16个数据
+
+    in += 8 * gid * wg;
+    tCur = t << 3;
+    for (int i = 0; i < 8; i++) x[i] = in[tCur + i];
+    for (int i = 0; i < 8; i++) set(sdata, tCur + i, x[i]);
+
+    __syncthreads();
+
+    // Step 1: Complete the remaining steps to create sorted sequences of length k.
+    int mod;
+    unsigned int mask;
+
+    // Step 2: Construct sorted sequence of length k from bitonic sequence of length k.
+    length = k >> 1;
+    dir = length << 1;
+    // Loop on comparison distance (between keys)
+    inc = length;
+    mod = inc;
+    mask = ~(NUM_ELEM_PT / (1) - 1);
+    while ((mod & mask) != 0) mod >>= (NUM_ELEM_BITSHIFT - 0);
+
+    if (mod & 1) {
+        RUN_2(2)
+        __syncthreads();
+    }
+#if NUM_ELEM_PT > 4
+    if (mod & 2) {
+        RUN_4(2)
+        __syncthreads();
+    }
+#if NUM_ELEM_PT > 8
+    if (mod & 4) {
+        RUN_8(2)
+        __syncthreads();
+    }
+    while (inc > 4) {
+        if (t < (wg >> 1)) {
+            RUN_16(1)
+        } else {
+            inc >>= 4;
+        }
+        __syncthreads();
+    }
+#else
+    while (inc > 2) {
+        RUN_8(2)
+        __syncthreads();
+    }
+#endif  // NUM_ELEM_PT > 16
+#else
+    while (inc > 1) {
+        RUN_4(2)
+        __syncthreads();
+    }
+#endif  // NUM_ELEM_PT > 8
+
+    // Step 4: Reduce size again by 2.
+    REDUCE(2)
+    __syncthreads();
+    // End of Step 4;
+
+    // Step 5: Construct sorted sequence of length k from bitonic sequence of length k.
+    length = k >> 1;
+    dir = length << 1;
+    // Loop on comparison distance (between keys)
+    inc = length;
+    mod = inc;
+    mask = ~(NUM_ELEM_PT / (2) - 1);
+    while ((mod & mask) != 0) mod >>= (NUM_ELEM_BITSHIFT - 1);
+
+#if NUM_ELEM_PT > 4
+    if (mod & 1) {
+        RUN_2(4)
+        __syncthreads();
+    }
+#if NUM_ELEM_PT > 8
+    if (mod & 2) {
+        RUN_4(4)
+        __syncthreads();
+    }
+    while (inc > 2) {
+        if (t < (wg >> 1)) {
+            RUN_8(2)
+        } else {
+            inc >>= 3;
+        }
+        __syncthreads();
+    }
+#else
+    while (inc > 1) {
+        RUN_4(4)
+        __syncthreads();
+    }
+#endif  // NUM_ELEM_PT > 16
+#else
+    while (inc > 0) {
+        RUN_2(4)
+        __syncthreads();
+    }
+#endif  // NUM_ELEM_PT > 8 while (inc > 0)
+
+    // Step 6: Reduce size again by 2.
+    REDUCE(4)
+    __syncthreads();
+    // End of Step 6;
+
+    // Step 7: Construct sorted sequence of length k from bitonic sequence of length k.
+    length = k >> 1;
+    dir = length << 1;
+    // Loop on comparison distance (between keys)
+    inc = length;
+    mod = inc;
+    mask = ~(NUM_ELEM_PT / (4) - 1);
+    while ((mod & mask) != 0) mod >>= (NUM_ELEM_BITSHIFT - 2);
+
+    if (mod & 1) {
+        RUN_2(8)
+        __syncthreads();
+    }
+    while (inc > 0) {
+        if (t < (wg >> 1)) {
+            RUN_4(4)
+        } else {
+            inc >>= 2;
+        }
+        __syncthreads();
+    }
+
+    // Step 8: Reduce size again by 2.
+    out += (NUM_ELEM_PT / 16) * gid * wg;
+    tCur = ((t >> klog2) << (klog2 + 1)) + (t & (k - 1));
+    for (int j = 0; j < NUM_GROUPS / 8; j++) {
+        T x0 = get(sdata, 2 * wg * j + tCur);
+        T x1 = get(sdata, 2 * wg * j + tCur + k);
+        out[wg * j + t] = max(x0, x1);
+    }
+}
+
+template <typename T>
+__global__ void Bitonic_TopKReduce(T* data, const int k, const int klog2) {
     // Shared mem size is determined by the host app at run time.
     // For n elements, we have n * 33/32 shared memory.
     // We use this to break bank conflicts.
@@ -529,20 +847,11 @@ __global__ void Bitonic_TopKReduce(T* data, const int k, const int klog2, const 
 
     T x[NUM_ELEM_PT];
 
-    if (reduce_times >= NUM_ELEM_BITSHIFT) {
-        // Move IN, OUT to block start
-        in += NUM_ELEM_PT * gid * wg;
-        tCur = t << NUM_ELEM_BITSHIFT;
-        for (int i = 0; i < NUM_ELEM_PT; i++) x[i] = in[tCur + i];
-        for (int i = 0; i < NUM_ELEM_PT; i++) set(sdata, tCur + i, x[i]);
-    } else {
-        int elem_shift = (reduce_times < 1) ? 1 : reduce_times;
-        int elem_pt = 1 << elem_shift;
-        in += elem_pt * gid * wg;
-        tCur = t << elem_shift;
-        for (int i = 0; i < elem_pt; i++) x[i] = in[tCur + i];
-        for (int i = 0; i < elem_pt; i++) set(sdata, tCur + i, x[i]);
-    }
+    // Move IN, OUT to block start
+    in += NUM_ELEM_PT * gid * wg;
+    tCur = t << NUM_ELEM_BITSHIFT;
+    for (int i = 0; i < NUM_ELEM_PT; i++) x[i] = in[tCur + i];
+    for (int i = 0; i < NUM_ELEM_PT; i++) set(sdata, tCur + i, x[i]);
 
     __syncthreads();
 
@@ -550,155 +859,149 @@ __global__ void Bitonic_TopKReduce(T* data, const int k, const int klog2, const 
     int mod;
     unsigned int mask;
 
-    if (reduce_times >= NUM_ELEM_BITSHIFT) {
-        // Step 1: Construct sorted sequence of length k from bitonic sequence of length k.
-        length = (k >> 1);
-        dir = length << 1;
-        // Loop on comparison distance (between keys)
-        inc = length;
-        mod = inc;
-        mask = ~(NUM_ELEM_PT / (1) - 1);
-        while ((mod & mask) != 0) mod >>= (NUM_ELEM_BITSHIFT - 0);
+    // Step 1: Construct sorted sequence of length k from bitonic sequence of length k.
+    length = (k >> 1);
+    dir = length << 1;
+    // Loop on comparison distance (between keys)
+    inc = length;
+    mod = inc;
+    mask = ~(NUM_ELEM_PT / (1) - 1);
+    while ((mod & mask) != 0) mod >>= (NUM_ELEM_BITSHIFT - 0);
 
-        if (mod & 1) {
-            RUN_2(1)
-            __syncthreads();
-        }
-        if (mod & 2) {
-            RUN_4(1)
-            __syncthreads();
-        }
+    if (mod & 1) {
+        RUN_2(1)
+        __syncthreads();
+    }
+    if (mod & 2) {
+        RUN_4(1)
+        __syncthreads();
+    }
 #if NUM_ELEM_PT > 8
-        if (mod & 4) {
-            RUN_8(1)
-            __syncthreads();
-        }
+    if (mod & 4) {
+        RUN_8(1)
+        __syncthreads();
+    }
 #if NUM_ELEM_PT > 16
-        if (mod & 8) {
-            RUN_16(1)
-            __syncthreads();
-        }
-        while (inc > 8) {
-            RUN_32(1)
-            __syncthreads();
-        }
+    if (mod & 8) {
+        RUN_16(1)
+        __syncthreads();
+    }
+    while (inc > 8) {
+        RUN_32(1)
+        __syncthreads();
+    }
 #else
-        while (inc > 4) {
-            RUN_16(1)
-            __syncthreads();
-        }
+    while (inc > 4) {
+        RUN_16(1)
+        __syncthreads();
+    }
 #endif  // NUM_ELEM_PT > 16
 #else
-        while (inc > 2) {
-            RUN_8(1)
-            __syncthreads();
-        }
+    while (inc > 2) {
+        RUN_8(1)
+        __syncthreads();
+    }
 #endif  // NUM_ELEM_PT > 8
 
-        // Step 2: Reduce the size by factor 2 by pairwise comparing adjacent sequences.
-        REDUCE(1)
+    // Step 2: Reduce the size by factor 2 by pairwise comparing adjacent sequences.
+    REDUCE(1)
+    __syncthreads();
+    // End of Step 2;
+
+    // Step 3: Construct sorted sequence of length k from bitonic sequence of length k.
+    // We now have n/2 elements.
+    length = k >> 1;
+    dir = length << 1;
+    // Loop on comparison distance (between keys)
+    inc = length;
+    mod = inc;
+    mask = ~(NUM_ELEM_PT / (1) - 1);
+    while ((mod & mask) != 0) mod >>= (NUM_ELEM_BITSHIFT - 0);
+
+    if (mod & 1) {
+        RUN_2(2)
         __syncthreads();
-        // End of Step 2;
     }
-
-    if (reduce_times >= NUM_ELEM_BITSHIFT - 1) {
-        // Step 3: Construct sorted sequence of length k from bitonic sequence of length k.
-        // We now have n/2 elements.
-        length = k >> 1;
-        dir = length << 1;
-        // Loop on comparison distance (between keys)
-        inc = length;
-        mod = inc;
-        mask = ~(NUM_ELEM_PT / (1) - 1);
-        while ((mod & mask) != 0) mod >>= (NUM_ELEM_BITSHIFT - 0);
-
-        if (mod & 1) {
-            RUN_2(2)
-            __syncthreads();
-        }
 #if NUM_ELEM_PT > 4
-        if (mod & 2) {
-            RUN_4(2)
-            __syncthreads();
-        }
+    if (mod & 2) {
+        RUN_4(2)
+        __syncthreads();
+    }
 #if NUM_ELEM_PT > 8
-        if (mod & 4) {
-            RUN_8(2)
-            __syncthreads();
+    if (mod & 4) {
+        RUN_8(2)
+        __syncthreads();
+    }
+    while (inc > 4) {
+        if (t < (wg >> 1)) {
+            RUN_16(1)
+        } else {
+            inc >>= 4;
         }
-        while (inc > 4) {
-            if (t < (wg >> 1)) {
-                RUN_16(1)
-            } else {
-                inc >>= 4;
-            }
-            __syncthreads();
-        }
+        __syncthreads();
+    }
 #else
-        while (inc > 2) {
-            RUN_8(2)
-            __syncthreads();
-        }
+    while (inc > 2) {
+        RUN_8(2)
+        __syncthreads();
+    }
 #endif  // NUM_ELEM_PT > 16
 #else
-        while (inc > 1) {
-            RUN_4(2)
-            __syncthreads();
-        }
+    while (inc > 1) {
+        RUN_4(2)
+        __syncthreads();
+    }
 #endif  // NUM_ELEM_PT > 8
 
-        // Step 4: Reduce size again by 2.
-        REDUCE(2)
-        __syncthreads();
-        // End of Step 4;
-    }
+    // Step 4: Reduce size again by 2.
+    REDUCE(2)
+    __syncthreads();
+    // End of Step 4;
 
-    if (reduce_times >= NUM_ELEM_BITSHIFT - 2) {
-        // Step 5: Construct sorted sequence of length k from bitonic sequence of length k.
-        length = k >> 1;
-        dir = length << 1;
-        // Loop on comparison distance (between keys)
-        inc = length;
-        mod = inc;
-        mask = ~(NUM_ELEM_PT / (2) - 1);
-        while ((mod & mask) != 0) mod >>= (NUM_ELEM_BITSHIFT - 1);
+    // Step 5: Construct sorted sequence of length k from bitonic sequence of length k.
+    length = k >> 1;
+    dir = length << 1;
+    // Loop on comparison distance (between keys)
+    inc = length;
+    mod = inc;
+    mask = ~(NUM_ELEM_PT / (2) - 1);
+    while ((mod & mask) != 0) mod >>= (NUM_ELEM_BITSHIFT - 1);
 
 #if NUM_ELEM_PT > 4
-        if (mod & 1) {
-            RUN_2(4)
-            __syncthreads();
-        }
+    if (mod & 1) {
+        RUN_2(4)
+        __syncthreads();
+    }
 #if NUM_ELEM_PT > 8
-        if (mod & 2) {
-            RUN_4(4)
-            __syncthreads();
+    if (mod & 2) {
+        RUN_4(4)
+        __syncthreads();
+    }
+    while (inc > 2) {
+        if (t < (wg >> 1)) {
+            RUN_8(2)
+        } else {
+            inc >>= 3;
         }
-        while (inc > 2) {
-            if (t < (wg >> 1)) {
-                RUN_8(2)
-            } else {
-                inc >>= 3;
-            }
-            __syncthreads();
-        }
+        __syncthreads();
+    }
 #else
-        while (inc > 1) {
-            RUN_4(4)
-            __syncthreads();
-        }
+    while (inc > 1) {
+        RUN_4(4)
+        __syncthreads();
+    }
 #endif  // NUM_ELEM_PT > 16
 #else
-        while (inc > 0) {
-            RUN_2(4)
-            __syncthreads();
-        }
+    while (inc > 0) {
+        RUN_2(4)
+        __syncthreads();
+    }
 #endif  // NUM_ELEM_PT > 8 while (inc > 0)
 
-        // Step 6: Reduce size again by 2.
-        REDUCE(4)
-        __syncthreads();
-        // End of Step 6;
-    }
+    // Step 6: Reduce size again by 2.
+    REDUCE(4)
+    __syncthreads();
+    // End of Step 6;
 
     // Step 7: Construct sorted sequence of length k from bitonic sequence of length k.
     length = k >> 1;

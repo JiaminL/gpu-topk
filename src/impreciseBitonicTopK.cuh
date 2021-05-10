@@ -344,7 +344,7 @@ cudaError_t impreciseBitonicTopK(KeyT* d_keys_in, unsigned int num_items, unsign
 
     while (numThreads >= (wg_size << NUM_ELEM_BITSHIFT)) {
         numThreads >>= NUM_ELEM_BITSHIFT;  // Each thread processes 16 elements.
-        Bitonic_TopKReduce<KeyT><<<numThreads / wg_size, wg_size, share_mem_size>>>(d_keys_in, k, klog2, NUM_ELEM_PT);
+        Bitonic_TopKReduce<KeyT><<<numThreads / wg_size, wg_size, share_mem_size>>>(d_keys_in, k, klog2);
     }
 
     if (numThreads > wg_size) {
@@ -352,7 +352,12 @@ cudaError_t impreciseBitonicTopK(KeyT* d_keys_in, unsigned int num_items, unsign
         int reduce_times = log2_32(numThreads / wg_size);
         numThreads >>= reduce_times;
         share_mem_size = (((wg_size << reduce_times) * 33) / 32) * sizeof(KeyT);
-        Bitonic_TopKReduce<KeyT><<<1, wg_size, share_mem_size>>>(d_keys_in, k, klog2, reduce_times);
+        if (reduce_times == 1)
+            Bitonic_TopKReduceOneTime<KeyT><<<1, wg_size, share_mem_size>>>(d_keys_in, k, klog2);
+        else if (reduce_times == 2)
+            Bitonic_TopKReduceTwoTimes<KeyT><<<1, wg_size, share_mem_size>>>(d_keys_in, k, klog2);
+        else if (reduce_times == 3)
+            Bitonic_TopKReduceThreeTimes<KeyT><<<1, wg_size, share_mem_size>>>(d_keys_in, k, klog2);
     }
 
     // 此时，筛选剩余 wg_size 个数据
