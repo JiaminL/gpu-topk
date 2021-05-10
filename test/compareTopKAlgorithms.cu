@@ -468,8 +468,10 @@ void getParameters(int argc, char** argv,
                 break;
             case '2':  // parameter 2
                 parameter[1] = atof(optarg);
+                break;
             case '?':  // 未定义的选项
-                printf("unknown option \n");
+                printf("unknown option: %c\n", optopt);
+                exit(1);
                 break;
             default:
                 printf("default \n");
