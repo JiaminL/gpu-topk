@@ -339,7 +339,7 @@ cudaError_t impreciseBitonicTopK(KeyT* d_keys_in, unsigned int num_items, unsign
         // 如果 wg_size < num_items < impre_pe * 8 * wg_size，local sort 每个线程处理 2 个数据，然后进行一次 reduce
         numThreads >>= 1;  // Each thread processes 2 elements.
         share_mem_size = ((2 * wg_size * 33) / 32) * sizeof(KeyT);
-        Bitonic_TopKLocalSort<KeyT><<<numThreads / wg_size, wg_size, share_mem_size>>>(d_keys_in, k, klog2);
+        Bitonic_TopKLocalSortOneReduce<KeyT><<<numThreads / wg_size, wg_size, share_mem_size>>>(d_keys_in, k, klog2);
     }
 
     while (numThreads >= (wg_size << NUM_ELEM_BITSHIFT)) {

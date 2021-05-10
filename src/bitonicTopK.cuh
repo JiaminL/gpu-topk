@@ -44,13 +44,13 @@ cudaError_t bitonicTopK(KeyT* d_keys_in, unsigned int num_items, unsigned int k,
         // 如果 wg_size < num_items < 16 * wg_size，local sort 每个线程处理 2 个数据，然后进行一次 reduce
         numThreads >>= 1;  // Each thread processes 2 elements.
         share_mem_size = ((2 * wg_size * 33) / 32) * sizeof(KeyT);
-        Bitonic_TopKLocalSort<KeyT><<<numThreads / wg_size, wg_size, share_mem_size>>>(d_keys_in, k, klog2);
+        Bitonic_TopKLocalSortOneReduce<KeyT><<<numThreads / wg_size, wg_size, share_mem_size>>>(d_keys_in, k, klog2);
 
     } else if (share_too_small && num_items > wg_size && max_reduce_times >= 1) {
         // share memory 不足以放 4 次 reduce所需的数据，并且至少可以做一次 reduce
         numThreads >>= 1;  // Each thread processes 2 elements.
         share_mem_size = ((2 * wg_size * 33) / 32) * sizeof(KeyT);
-        Bitonic_TopKLocalSort<KeyT><<<numThreads / wg_size, wg_size, share_mem_size>>>(d_keys_in, k, klog2);
+        Bitonic_TopKLocalSortOneReduce<KeyT><<<numThreads / wg_size, wg_size, share_mem_size>>>(d_keys_in, k, klog2);
         
         while (numThreads >= (wg_size << max_reduce_times)) {
             numThreads >>= max_reduce_times;  // Each thread processes 2^max_reduce_times elements.

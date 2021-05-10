@@ -734,7 +734,7 @@ __global__ void Bitonic_TopKReduce(T* data, const int k, const int klog2, const 
 
 // 只进行 local sort 然后进行 1 次 reduce，每个 block 只处理 2 * blockDim.x 的数据
 template <typename T>
-__global__ void Bitonic_TopKLocalSort(T* data, const int k, const int klog2) {
+__global__ void Bitonic_TopKLocalSortOneReduce(T* data, const int k, const int klog2) {
     // Shared mem size is determined by the host app at run time.
     // For n elements, we have n * 33/32 shared memory.
     // We use this to break bank conflicts.
