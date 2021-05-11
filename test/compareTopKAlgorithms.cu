@@ -69,11 +69,11 @@
 
 using namespace std;
 
-CachingDeviceAllocator g_allocator(true);  // Caching allocator for device memory
-
 template <typename KeyT, typename FuncType>
 void compareAlgorithms(uint size, uint k, uint numTests, uint* algorithmsToTest, double* parameter,
                        char* generateName, FuncType generateFunc, bool genNeedSort) {
+    CachingDeviceAllocator g_allocator(2, 1, 31, (uint)(3 << 30), false);  // Caching allocator for device memory
+
     KeyT* d_vec;
     KeyT* d_vec_copy;
     KeyT* d_res;
@@ -153,15 +153,6 @@ void compareAlgorithms(uint size, uint k, uint numTests, uint* algorithmsToTest,
         // generate the random vector using the specified distribution
         generateFunc(d_vec, size, generator, g_allocator, parameter);
 
-        if (genNeedSort) {                                 // 如果是升序或降序（需要申请临时空间用来排序）
-            if (size == (uint)(2 << 30) / sizeof(KeyT)) {  // 2GB
-                // printf("sleep 100\n");
-                usleep(50000);                                    // sleep 50 ms
-            } else if (size == (uint)(1 << 30) / sizeof(KeyT)) {  // 1GB
-                usleep(20000);                                    // sleep 20 ms
-            }
-        }
-
         // KeyT* h_vec = new KeyT[size];
         // cudaMemcpy(h_vec, d_vec, size * sizeof(KeyT), cudaMemcpyDeviceToHost);
         // cout << h_vec[0] << " " << h_vec[1] << " " << h_vec[2] << " " << h_vec[3] << " " << h_vec[4] << " " << endl;
@@ -180,17 +171,6 @@ void compareAlgorithms(uint size, uint k, uint numTests, uint* algorithmsToTest,
             if (algorithmsToTest[j]) {
                 // run timing function j
                 TIME_FUNC(arrayOfTimingFunctions[j](d_vec_copy, size, k, d_res, g_allocator), runtime);
-                // 我猜测 GPU 释放空间与函数返回是异步的，上一次测试申请的空间还没有释放结束，下一次测试函数就开始了
-                // 由于我的 GPU 显存只有 8GB，如果原始数据大小为 2GB，因为 GPU 没有更多的 2GB 空间用来分配（d_vec_copy, d_vec 已经使用了 4GB）
-                // 下一次测试必须等待，导致除第一个上 GPU 的测试外，其余测试都有 30 ~ 50 ms 不等的延时
-                if (j == 0) {                                      // 如果是 sort top-k 算法（需要申请临时空间）
-                    if (size == (uint)(2 << 30) / sizeof(KeyT)) {  // 2GB
-                        // printf("sleep 100\n");
-                        usleep(50000);                                    // sleep 50 ms
-                    } else if (size == (uint)(1 << 30) / sizeof(KeyT)) {  // 1GB
-                        usleep(20000);                                    // sleep 20 ms
-                    }
-                }
 #if NEED_PRINT_EVERY_TESTING
                 printf("\tTESTING: %-2u %-20s runtime: %f ms\n", j, namesOfTimingFunctions[j], runtime);
 #endif
