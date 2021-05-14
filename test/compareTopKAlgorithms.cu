@@ -459,6 +459,7 @@ void getParameters(int argc, char** argv,
     }
 
     // deal error
+    int max_power = (type == UINT || type == INT || type == FLOAT) ? max_4b_power : max_8b_power;
     if (error == TYPE_ERROR) {
         cerr << "error: 仅支持类型：int, long, uint, ulong, float, double\n";
         exit(1);
@@ -481,18 +482,25 @@ void getParameters(int argc, char** argv,
         if (type == DOUBLE) cerr << "error: double 类型仅支持正态分布 normal, 对数正态分布 lognormal, U(0,1)均匀分布 uniform\n";
         exit(1);
     }
+
     if (error == SORT_ERROR) {
         cerr << "error: 有两种排序：增序 inc，降序 dec\n";
+        exit(1);
+    }
+
+    if (error == K_ERROR) {
+        cerr << "error: k 值必须为正整数\n";
         exit(1);
     }
     if (k == -1) {
         cerr << "error: 请输入 k 值，如: -k 32\n";
         exit(1);
     }
-    if (error == K_ERROR) {
-        cerr << "error: k 值必须为正整数\n";
+    if (log2_32(k) + 1 > max_power) {
+        cerr << "error: k 值过大\n";
         exit(1);
     }
+
     if (error == TESTCOUNT_ERROR) {
         cerr << "error: testcount 必须为正整数\n";
         exit(1);
@@ -502,21 +510,34 @@ void getParameters(int argc, char** argv,
         cerr << "error: start_power 与 stop_power 须为正整数\n";
         exit(1);
     }
-    if (start_power == -1) start_power = log2_32(k) + 1;  // 未设置 start_power
-    if (start_power <= log2_32(k)) {
-        cerr << "error: 2^startpower 必须大于 k\n";
-        exit(1);
+
+    if (start_power == -1 && stop_power == -1)  // 如果两个 power 都没有给出，默认只执行最大的数据集
+        start_power = stop_power = max_power;
+    else if (start_power == -1)  // 如果只给出了一个 power，那么只执行这个 power 对应的数据集
+        start_power = stop_power;
+    else if (stop_power == -1)
+        stop_power = start_power;
+    if (start_power != stop_power) {
+        if (start_power <= log2_32(k)) {
+            cerr << "error: 2^startpower 必须大于 k\n";
+            exit(1);
+        }
+        if (stop_power > max_power) {
+            cerr << "error: 2^stoppower 个该类型数据，已超过 GPU 能承载的最大数量\n";
+            exit(1);
+        }
+    } else {  // start_power == stop_power
+        if (start_power <= log2_32(k)) {
+            cerr << "error: power=" << start_power << ", 2^power 必须大于 k\n";
+            exit(1);
+        } else if (start_power > max_power) {
+            cerr << "error: power=" << start_power << ", 2^power 个该类型数据，已超过 GPU 能承载的最大数量\n";
+            exit(1);
+        }
     }
-    int max_power = (type == UINT || type == FLOAT || type == INT) ? max_4b_power : max_8b_power;  // 未设置 stop_power
-    if (stop_power == -1) stop_power = max_power;
-    if (stop_power > max_power) {
-        cerr << "error: 2^stoppower 个该类型数据，已超过 GPU 能承载的最大数量\n";
-        exit(1);
-    }
+
     if (start_power > stop_power) {
-        if (start_power == log2_32(k) + 1 && stop_power == max_power)
-            cerr << "error: k 值过大\n";
-        else if (stop_power <= log2_32(k))
+        if (stop_power <= log2_32(k))
             cerr << "error: 2^stoppower 必须大于 k\n";
         else
             cerr << "error: startpower 不应大于 stoppower\n";
@@ -536,6 +557,7 @@ void getParameters(int argc, char** argv,
                 exit(1);
             }
     }
+
     u_k = (uint)k;
     u_start_power = (uint)start_power;
     u_stop_power = (uint)stop_power;
