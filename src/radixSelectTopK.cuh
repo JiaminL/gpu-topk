@@ -400,14 +400,18 @@ __global__ void select_kth_bucket(KeyT* d_keys, const uint digit, const uint dig
 // <ERROR>: 只能支持sizeof(KeyT)为4的数据类型
 #define KPT 16
 #define TPB 320
-#define DIGIT_BITS 13
+#define DIGIT_BITS_FOR_4BYTES 10
+#define DIGIT_BITS_FOR_8BYTES 13
 template <typename KeyT>
 cudaError_t radixSelectTopK(KeyT* d_keys_in, uint num_items, uint k, KeyT* d_keys_out,
                             CachingDeviceAllocator& g_allocator) {
     cudaError error = cudaSuccess;
 
+    int digit_bits = (sizeof(KeyT) == 8) ? DIGIT_BITS_FOR_8BYTES : DIGIT_BITS_FOR_4BYTES;
+    uint histogram_size = 0x01 << digit_bits;
+
     uint* d_histogram;
-    CubDebugExit(g_allocator.DeviceAllocate((void**)&d_histogram, sizeof(uint) * (0x01 << DIGIT_BITS)));
+    CubDebugExit(g_allocator.DeviceAllocate((void**)&d_histogram, sizeof(uint) * histogram_size));
 
     // We allocate two indices, one that maintains index into output array (this goes till K)
     // second maintains index into the output buffer containing reduced set of top-k candidates.
@@ -419,11 +423,11 @@ cudaError_t radixSelectTopK(KeyT* d_keys_in, uint num_items, uint k, KeyT* d_key
     // Set the index into output array to 0.
     cudaMemset(d_index_out, 0, sizeof(uint));
 
-    uint* h_histogram = new uint[1 << DIGIT_BITS];
+    uint* h_histogram = new uint[histogram_size];
 
     uint KPB = KPT * TPB;
 
-    uint digit_num = (sizeof(KeyT) * 8 + DIGIT_BITS - 1) / DIGIT_BITS;
+    uint digit_num = (sizeof(KeyT) * 8 + digit_bits - 1) / digit_bits;
     for (uint digit = 0; digit < digit_num; digit++) {
         uint num_blocks = num_items / KPB;                             // Pass-0 rough processing blocks (floor on purpose)
         uint processed_elements = num_blocks * KPB;                    // Pass-0 number of rough processed elements
@@ -431,21 +435,30 @@ cudaError_t radixSelectTopK(KeyT* d_keys_in, uint num_items, uint k, KeyT* d_key
         uint remainder_blocks = (KPB - 1 + remaining_elements) / KPB;  // Number of blocks required for remaining elements (typically 0 or 1)
 
         // Zero out the histogram
-        cudaMemset(d_histogram, 0, (1 << DIGIT_BITS) * sizeof(uint));
+        cudaMemset(d_histogram, 0, histogram_size * sizeof(uint));
 
-        if (num_blocks > 0)
-            rdxsrt_histogram<KeyT, uint, DIGIT_BITS, KPT, TPB, 9><<<num_blocks, TPB, 0>>>(d_keys_in, digit, d_histogram);
-        if (remaining_elements > 0)
-            rdxsrt_histogram_with_guards<KeyT, uint, DIGIT_BITS, KPT, TPB, 9><<<remainder_blocks, TPB, 0>>>(d_keys_in, digit, d_histogram, num_items, num_blocks);
+        if (num_blocks > 0) {
+            if (sizeof(KeyT) == 8)
+                rdxsrt_histogram<KeyT, uint, DIGIT_BITS_FOR_8BYTES, KPT, TPB, 9><<<num_blocks, TPB, 0>>>(d_keys_in, digit, d_histogram);
+            else
+                rdxsrt_histogram<KeyT, uint, DIGIT_BITS_FOR_4BYTES, KPT, TPB, 9><<<num_blocks, TPB, 0>>>(d_keys_in, digit, d_histogram);
+        }
 
-        cudaMemcpy(h_histogram, d_histogram, (1 << DIGIT_BITS) * sizeof(uint), cudaMemcpyDeviceToHost);
+        if (remaining_elements > 0) {
+            if (sizeof(KeyT) == 8)
+                rdxsrt_histogram_with_guards<KeyT, uint, DIGIT_BITS_FOR_8BYTES, KPT, TPB, 9><<<remainder_blocks, TPB, 0>>>(d_keys_in, digit, d_histogram, num_items, num_blocks);
+            else
+                rdxsrt_histogram_with_guards<KeyT, uint, DIGIT_BITS_FOR_4BYTES, KPT, TPB, 9><<<remainder_blocks, TPB, 0>>>(d_keys_in, digit, d_histogram, num_items, num_blocks);
+        }
+
+        cudaMemcpy(h_histogram, d_histogram, histogram_size * sizeof(uint), cudaMemcpyDeviceToHost);
 
         // Check for failure to launch
         CubDebugExit(error = cudaPeekAtLastError());
 
         uint rolling_sum = 0;
         uint digit_val;
-        for (int i = (1 << DIGIT_BITS) - 1; i >= 0; i--) {
+        for (int i = histogram_size - 1; i >= 0; i--) {
             if ((rolling_sum + h_histogram[i]) > k) {
                 // 表示digit数字值为 (digit_val+1) …… 255 的子桶中的元素都是 top-k 元素
                 // 并且第 k 个元素在digit数字值为 digit_val （或 digit_val+1）的子桶中
@@ -465,7 +478,10 @@ cudaError_t radixSelectTopK(KeyT* d_keys_in, uint num_items, uint k, KeyT* d_key
         // d_keys_out 是一定属于 top-k 的子桶的集合
         // d_index_buffer 为 d_keys_in 指向空间的有效元素个数
         // d_index_out 为 d_keys_out 中的元素个数，注意：每次循环，并未置零 d_index_out，所以会一直累加
-        select_kth_bucket<KeyT, uint, DIGIT_BITS, KPT, TPB><<<num_blocks + remainder_blocks, TPB>>>(d_keys_in, digit, digit_val, num_items, d_keys_out, d_index_buffer, d_index_out);
+        if (sizeof(KeyT) == 8)
+            select_kth_bucket<KeyT, uint, DIGIT_BITS_FOR_8BYTES, KPT, TPB><<<num_blocks + remainder_blocks, TPB>>>(d_keys_in, digit, digit_val, num_items, d_keys_out, d_index_buffer, d_index_out);
+        else
+            select_kth_bucket<KeyT, uint, DIGIT_BITS_FOR_4BYTES, KPT, TPB><<<num_blocks + remainder_blocks, TPB>>>(d_keys_in, digit, digit_val, num_items, d_keys_out, d_index_buffer, d_index_out);
 
         CubDebugExit(error = cudaPeekAtLastError());
 
