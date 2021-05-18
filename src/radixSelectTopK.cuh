@@ -403,9 +403,10 @@ __global__ void select_kth_bucket(KeyT* d_keys, const uint digit, const uint dig
 #define DIGIT_BITS_FOR_4BYTES 10
 #define DIGIT_BITS_FOR_8BYTES 13
 template <typename KeyT>
-cudaError_t radixSelectTopK(KeyT* d_keys_in, uint num_items, uint k, KeyT* d_keys_out,
+cudaError_t radixSelectTopK(KeyT* d_keys_in, uint num_items, uint k, KeyT* d_keys_out, unsigned int& out_items,
                             CachingDeviceAllocator& g_allocator) {
     cudaError error = cudaSuccess;
+    out_items = k;
 
     int digit_bits = (sizeof(KeyT) == 8) ? DIGIT_BITS_FOR_8BYTES : DIGIT_BITS_FOR_4BYTES;
     uint histogram_size = 0x01 << digit_bits;

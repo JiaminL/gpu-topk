@@ -13,9 +13,10 @@ using namespace cub;
 #define MAX_SHARE_MEM_SIZE 49152  // Geforce RTX 2070 Super 每个 block 最大的 share memory 大小（单位：byte）
 
 template <typename KeyT>
-cudaError_t bitonicTopK(KeyT* d_keys_in, unsigned int num_items, unsigned int k, KeyT* d_keys_out,
+cudaError_t bitonicTopK(KeyT* d_keys_in, unsigned int num_items, unsigned int k, KeyT* d_keys_out, unsigned int& out_items,
                         CachingDeviceAllocator& g_allocator) {
     int old_k = k;
+    out_items = k;
     int klog2 = log2_32(k);
     if ((1 << klog2) < k) {
         klog2++;

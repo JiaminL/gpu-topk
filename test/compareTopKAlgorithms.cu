@@ -27,7 +27,7 @@
 
 #define NEED_PRINT_EVERY_TESTING false
 #define NEED_PRINT_DIFF false
-#define NEED_ANALYSIS true
+#define NEED_ANALYSIS false
 
 #define SETUP_TIMING()       \
     cudaEvent_t start, stop; \
@@ -44,26 +44,29 @@
     }
 
 #define NUMBEROFALGORITHMS 5
-#define INIT_FUNCTIONS()                                                                           \
-    typedef cudaError_t (*ptrToTimingFunction)(KeyT*, uint, uint, KeyT*, CachingDeviceAllocator&); \
-    const char* namesOfTimingFunctions[NUMBEROFALGORITHMS] = {                                     \
-        "Sort TopK",                                                                               \
-        "Radix Select",                                                                            \
-        "Bitonic TopK",                                                                            \
-        "Threshold TopK",                                                                          \
-        "Imprecise Bitonic",                                                                       \
-    };                                                                                             \
-    ptrToTimingFunction arrayOfTimingFunctions[NUMBEROFALGORITHMS] = {                             \
-        &sortTopK<KeyT>,                                                                           \
-        &radixSelectTopK<KeyT>,                                                                    \
-        &bitonicTopK<KeyT>,                                                                        \
-        &thresholdTopK<KeyT>,                                                                      \
-        &impreciseBitonicTopK<KeyT>,                                                               \
+#define INIT_FUNCTIONS()                                                                                  \
+    typedef cudaError_t (*ptrToTimingFunction)(KeyT*, uint, uint, KeyT*, uint&, CachingDeviceAllocator&); \
+    const char* namesOfTimingFunctions[NUMBEROFALGORITHMS] = {                                            \
+        "Sort TopK",                                                                                      \
+        "Radix Select",                                                                                   \
+        "Bitonic TopK",                                                                                   \
+        "Threshold TopK",                                                                                 \
+        "Imprecise Bitonic",                                                                              \
+    };                                                                                                    \
+    ptrToTimingFunction arrayOfTimingFunctions[NUMBEROFALGORITHMS] = {                                    \
+        &sortTopK<KeyT>,                                                                                  \
+        &radixSelectTopK<KeyT>,                                                                           \
+        &bitonicTopK<KeyT>,                                                                               \
+        &thresholdTopK<KeyT>,                                                                             \
+        &impreciseBitonicTopK<KeyT>,                                                                      \
     };
 #define SET_ALGORITHMS_RUN()                            \
     {                                                   \
         fill_n(algorithmsToRun, NUMBEROFALGORITHMS, 1); \
-        algorithmsToRun[0] = 0;                         \
+        algorithmsToRun[0] = (NEED_PRINT_DIFF) ? 1 : 1; \
+        algorithmsToRun[1] = 1;                         \
+        algorithmsToRun[2] = 1;                         \
+        algorithmsToRun[3] = 0;                         \
         algorithmsToRun[4] = 0;                         \
     }
 
@@ -84,6 +87,7 @@ void compareAlgorithms(uint size, uint k, uint numTests, uint* algorithmsToTest,
     float maxTimesPerAlgorithm[NUMBEROFALGORITHMS];
     double standardPerAlgorithm[NUMBEROFALGORITHMS];  // standard deviation 标准差
     KeyT* resultsArray[NUMBEROFALGORITHMS][numTests];
+    uint out_k[NUMBEROFALGORITHMS][numTests];
 
     uint winnerArray[numTests];
     uint timesWon[NUMBEROFALGORITHMS];
@@ -117,6 +121,7 @@ void compareAlgorithms(uint size, uint k, uint numTests, uint* algorithmsToTest,
 #if NEED_ANALYSIS
     KeyT* h_sort_vec = (KeyT*)malloc(sizeof(KeyT) * size);
 
+    double avg_out_k[NUMBEROFALGORITHMS];
     uint total_topk_times[NUMBEROFALGORITHMS];  // 所有 numTests 个测试的结果中正确的 top-k 出现的总次数
     double avg_topk_rate[NUMBEROFALGORITHMS];   // 所有 numTests 个测试结果中正确 top-k 的比例均值
     fill_n(total_topk_times, NUMBEROFALGORITHMS, 0);
@@ -170,7 +175,7 @@ void compareAlgorithms(uint size, uint k, uint numTests, uint* algorithmsToTest,
             j = runOrder[x];
             if (algorithmsToTest[j]) {
                 // run timing function j
-                TIME_FUNC(arrayOfTimingFunctions[j](d_vec_copy, size, k, d_res, g_allocator), runtime);
+                TIME_FUNC(arrayOfTimingFunctions[j](d_vec_copy, size, k, d_res, out_k[j][i], g_allocator), runtime);
 #if NEED_PRINT_EVERY_TESTING
                 printf("\tTESTING: %-2u %-20s runtime: %f ms\n", j, namesOfTimingFunctions[j], runtime);
 #endif
@@ -211,8 +216,7 @@ void compareAlgorithms(uint size, uint k, uint numTests, uint* algorithmsToTest,
         // 前提：找到的结果数组已经按从大到小排列
         for (j = 0; j < NUMBEROFALGORITHMS; j++) {
             if (!res_error[j] && algorithmsToTest[j]) {
-                for (uint res_idx = 0, sort_idx = 0; res_idx < k; res_idx++) {
-                    if (h_sort_vec[sort_idx] != resultsArray[j][i][res_idx] && sort_idx >= 1 && h_sort_vec[sort_idx - 1] == resultsArray[j][i][res_idx]) continue;
+                for (uint res_idx = 0, sort_idx = 0; res_idx < out_k[j][i]; res_idx++) {
                     while (sort_idx < size && h_sort_vec[sort_idx] != resultsArray[j][i][res_idx]) sort_idx++;
                     if (sort_idx == size) {
                         res_error[j] = true;
@@ -230,9 +234,12 @@ void compareAlgorithms(uint size, uint k, uint numTests, uint* algorithmsToTest,
 
 #if NEED_ANALYSIS
     for (j = 0; j < NUMBEROFALGORITHMS; j++) {
-        if (!res_error[j] && algorithmsToTest[j]) {
-            avg_analyze_1[j] = sum_noWeight_analyze_1[j] / (double)(weight * numTests);
-            avg_topk_rate[j] = total_topk_times[j] / (double)(numTests * k);
+        if (algorithmsToTest[j]) {
+            if (!res_error[j]) {
+                avg_analyze_1[j] = sum_noWeight_analyze_1[j] / (double)(weight * numTests);
+                avg_topk_rate[j] = total_topk_times[j] / (double)(numTests * k);
+            }
+            avg_out_k[j] = accumulate(out_k[j], out_k[j] + numTests, 0.0) / (double)numTests;
         }
     }
     free(h_sort_vec);
@@ -271,7 +278,7 @@ void compareAlgorithms(uint size, uint k, uint numTests, uint* algorithmsToTest,
     if (numTests > 1) printf(" %-15s", "std dev");
     if (total_algorithms > 1) printf(" %-15s", "won times");
 #if NEED_ANALYSIS
-    printf(" %-15s %-15s", "top-k rate (%)", "analyze 1");
+    printf("%-15s %-15s %-15s", "return items", "top-k rate (%)", "analyze 1");
 #endif
     printf("\n");
     // print out data
@@ -282,6 +289,7 @@ void compareAlgorithms(uint size, uint k, uint numTests, uint* algorithmsToTest,
             if (numTests > 1) printf(" %-15f", standardPerAlgorithm[i]);
             if (total_algorithms > 1) printf(" %-15d", timesWon[i]);
 #if NEED_ANALYSIS
+            printf("% -15.2f", avg_out_k[i]);
             if (res_error[i])
                 printf(" %-15s %-15s", "ERROR", "ERROR");
             else
@@ -474,7 +482,7 @@ void getParameters(int argc, char** argv,
         error = DISTRIBUTION_ERROR;
     }
     if (error == DISTRIBUTION_ERROR) {
-        if (type == UINT) cerr << "error: uint（unsigned int）类型仅支持均匀分布 uniform, 泊松分布 possion\n";
+        if (type == UINT) cerr << "error: uint（unsigned int）类型仅支持均匀分布 uniform, 泊松分布 poisson\n";
         if (type == ULONG) cerr << "error: ulong（unsigned long long）类型仅支持均匀分布 uniform\n";
         if (type == INT) cerr << "error: int 类型仅支持均匀分布 uniform\n";
         if (type == LONG) cerr << "error: long（long long）类型仅支持均匀分布 uniform\n";

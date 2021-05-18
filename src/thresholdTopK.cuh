@@ -7,6 +7,7 @@
 
 #include "bitonicTopK.cuh"
 #include "radixSelectTopK.cuh"
+#include "sortTopK.cuh"
 
 using namespace cub;
 
@@ -132,76 +133,109 @@ __global__ void selectGeThreshold(KeyT* d_keys, uint num_items, KeyT threshold, 
 #define SELECT_GE_ELEM_PT 16
 #define GROUP_SIZE 16
 #define GROUP_SHIFT 4
+template <typename KeyT, uint KeyPerT>
+__global__ void MemFull(KeyT* d_keys, KeyT threshold, uint fill_num) {
+    uint offset = (blockIdx.x * blockDim.x + threshold) * KeyPerT;
+    if (fill_num > offset) {
+        if (fill_num - offset > KeyPerT)
+            for (int i = 0; i < KeyPerT; ++i) d_keys[i] = threshold;
+        else
+            for (int i = 0; i < fill_num - offset; ++i) d_keys[i] = threshold;
+    }
+}
+
 template <typename KeyT>
-cudaError_t thresholdTopK(KeyT* d_keys_in, unsigned int num_items, unsigned int k, KeyT* d_keys_out,
+cudaError_t thresholdTopK(KeyT* d_keys_in, unsigned int num_items, unsigned int k, KeyT* d_keys_out, unsigned int& out_items,
                           CachingDeviceAllocator& g_allocator) {
     uint log2_n = log2_32(num_items);
     uint log2_k = log2_32(k);
     uint log2_r;
     uint sub_log = log2_n - log2_k;
-    bool use_bitonic = false;
-    if (sub_log >= 8) {
-        log2_r = (sub_log >= 20) ? 17 : (sub_log - 3);
-        uint loop_times = 3;  // 寻找 3 次 1 << log2_r 个数中的最大值，取最大值中的中值作为最终的 threshold
+    uint loop_times = 0;
 
-        // 16 个数据划为一组
-        uint random_size = 1 << (log2_r - GROUP_SHIFT);
-        uint mod = (uint)((1 << log2_32(num_items)) - 1) - (GROUP_SIZE - 1);
+    if (sub_log >= 15) {
+        // 寻找一次 max
+        log2_r = sub_log - 10;
+        loop_times = 1;
+    } else if (sub_log >= 10) {
+        log2_r = (log2_n < 19) ? 4 : sub_log - 6;
+        loop_times = 3;
+    } else if (sub_log >= 8 && log2_n >= 19) {
+        log2_r = sub_log - 5;
+        loop_times = 5;
+    }
+
+    if (loop_times > 0) {
+        uint random_size = (log2_r <= GROUP_SHIFT) ? 1 : (1 << (log2_r - GROUP_SHIFT));
+        uint mod = (uint)((1 << log2_n) - 1) - (GROUP_SIZE - 1);
         uint block_size = min(random_size, 256);
+        KeyT threshold;
+        KeyT h_max[5];
 
-        // 申请空间
-        uint* d_random_order;
-        KeyT* d_random_keys;
-        KeyT* d_max;
-        CubDebugExit(g_allocator.DeviceAllocate((void**)&d_random_order, sizeof(uint) * (random_size)));
-        CubDebugExit(g_allocator.DeviceAllocate((void**)&d_random_keys, sizeof(KeyT) * (random_size)));
-        CubDebugExit(g_allocator.DeviceAllocate((void**)&d_max, sizeof(KeyT) * loop_times));
-        uint* h_random_order = (uint*)malloc(sizeof(uint) * random_size);
-        KeyT* h_max = (KeyT*)malloc(sizeof(KeyT) * loop_times);
+        // 设置随机数种子
+        timeval t1;
+        gettimeofday(&t1, NULL);
+        unsigned long long seed = t1.tv_usec * t1.tv_sec;
+        srand(seed);
 
-        for (int i = 0; i < loop_times; i++) {
-            // 设置随机数种子
-            timeval t1;
-            gettimeofday(&t1, NULL);
-            unsigned long long seed = t1.tv_usec * t1.tv_sec;
-            srand(seed);
+        if (log2_r >= 6) {
+            // 用 kernel 取数并寻找 max
+            uint* d_random_order;
+            KeyT* d_random_keys;
+            KeyT* d_max;
+            // 申请空间
+            CubDebugExit(g_allocator.DeviceAllocate((void**)&d_random_order, sizeof(uint) * (random_size)));
+            CubDebugExit(g_allocator.DeviceAllocate((void**)&d_random_keys, sizeof(KeyT) * (random_size)));
+            CubDebugExit(g_allocator.DeviceAllocate((void**)&d_max, sizeof(KeyT) * loop_times));
+            uint* h_random_order = (uint*)malloc(sizeof(uint) * random_size);
 
-            // 生成随机的 radom_size 个数据
-            for (int j = 0; j < random_size; j++) {
-                h_random_order[j] = rand();
+            for (int i = 0; i < loop_times; i++) {
+                // 生成随机的 radom_size 个数据
+                for (int j = 0; j < random_size; j++) h_random_order[j] = rand();
+                cudaMemcpy(d_random_order, h_random_order, sizeof(uint) * random_size, cudaMemcpyHostToDevice);
+                // 将输入数据 d_keys_in 划分为 16 个一组，从 d_keys_in 中取 random_size 个组，每个线程取 16 个数，将最大的输出到 d_random_keys
+                getRandomData<KeyT, GROUP_SIZE><<<random_size / block_size, block_size>>>(d_keys_in, d_random_order, d_random_keys, mod);
+                // 找出 d_random_keys 中最大值
+                void* d_temp_storage = NULL;
+                size_t temp_storage_bytes = 0;
+                DeviceReduce::Max(d_temp_storage, temp_storage_bytes, d_random_keys, d_max + i, random_size);
+                CubDebugExit(g_allocator.DeviceAllocate((void**)&d_temp_storage, temp_storage_bytes));
+                DeviceReduce::Max(d_temp_storage, temp_storage_bytes, d_random_keys, d_max + i, random_size);
+                CubDebugExit(g_allocator.DeviceFree(d_temp_storage));
             }
-            cudaMemcpy(d_random_order, h_random_order, sizeof(uint) * random_size, cudaMemcpyHostToDevice);
 
-            // 将输入数据 d_keys_in 划分为 16 个一组，从 d_keys_in 中取 random_size 个组，每个线程取 16 个数，将最大的输出到 d_random_keys
-            getRandomData<KeyT, GROUP_SIZE><<<random_size / block_size, block_size>>>(d_keys_in, d_random_order, d_random_keys, mod);
-
-            // 找出 d_random_keys 中最大值
-            void* d_temp_storage = NULL;
-            size_t temp_storage_bytes = 0;
-            DeviceReduce::Max(d_temp_storage, temp_storage_bytes, d_random_keys, d_max + i, random_size);
-            CubDebugExit(g_allocator.DeviceAllocate((void**)&d_temp_storage, temp_storage_bytes));
-            DeviceReduce::Max(d_temp_storage, temp_storage_bytes, d_random_keys, d_max + i, random_size);
-            CubDebugExit(g_allocator.DeviceFree(d_temp_storage));
+            cudaMemcpy(h_max, d_max, sizeof(KeyT) * loop_times, cudaMemcpyDeviceToHost);
+            CubDebugExit(g_allocator.DeviceFree(d_random_order));
+            CubDebugExit(g_allocator.DeviceFree(d_random_keys));
+            CubDebugExit(g_allocator.DeviceFree(d_max));
+            free(h_random_order);
+        } else {
+            // 用 CPU 取数并寻找 max
+            for (int i = 0; i < loop_times; i++) {
+                // 生成随机的 radom_size 个数据
+                KeyT x[GROUP_SIZE];
+                int size = 1 << ((log2_r < GROUP_SHIFT) ? log2_r : GROUP_SHIFT);
+                for (uint offset = 0; offset < random_size; offset++) {
+                    int order = rand() & mod;
+                    cudaMemcpy(x, d_keys_in + order, sizeof(KeyT) * size, cudaMemcpyDeviceToHost);
+                    if (offset == 0 || h_max[i] < x[0]) h_max[i] = x[0];
+                    for (int j = 1; j < size; j++)
+                        if (h_max[i] < x[j]) h_max[i] = x[j];
+                }
+            }
         }
 
-        cudaMemcpy(h_max, d_max, sizeof(KeyT) * loop_times, cudaMemcpyDeviceToHost);
         // 寻找 h_max 中的中位数
         sort(h_max, h_max + loop_times);
-        KeyT threshold = h_max[loop_times / 2];
+        threshold = h_max[loop_times / 2];
 
-        // 释放空间
-        CubDebugExit(g_allocator.DeviceFree(d_random_order));
-        CubDebugExit(g_allocator.DeviceFree(d_random_keys));
-        CubDebugExit(g_allocator.DeviceFree(d_max));
-        free(h_random_order);
-        free(h_max);
-
-        // 将原数组中大于等于 threshold 的值都拷贝进 d_keys_in 的开始位置
+        // 分配空间
         uint* d_new_len;
         uint h_new_len;
         CubDebugExit(g_allocator.DeviceAllocate((void**)&d_new_len, sizeof(uint)));
         cudaMemset(d_new_len, 0, sizeof(uint));
 
+        // 寻找大于等于 threshold 的元素，为 h_new_len，放入原数组的空间
         uint elem_pb = SELECT_GE_BLOCK_SIZE * SELECT_GE_ELEM_PT;
         uint block_num = (num_items + elem_pb - 1) / elem_pb;
         block_size = SELECT_GE_BLOCK_SIZE;
@@ -209,29 +243,202 @@ cudaError_t thresholdTopK(KeyT* d_keys_in, unsigned int num_items, unsigned int 
         cudaMemcpy(&h_new_len, d_new_len, sizeof(uint), cudaMemcpyDeviceToHost);
         CubDebugExit(g_allocator.DeviceFree(d_new_len));
 
-        // 如果 h_new_len < k，从 d_keys_in 的前 k * 8 个元素里面寻找 top-k，否则，就从 h_keys_in 中前 d_keys_in 中寻找 top-k
-        num_items = (h_new_len < k) ? (k << 3) : h_new_len;  // 由于 sub_log >= 8，一定有 k * 8 < num_items
-        // <to do>: 如果 h_new_len < k，可能会让返回值中某些数出现次数大于原数据集中出现次数
+        // 更新数组大小
 
-        // 在搜索的总数据量小于等于 2^19 时，bitonic 有更好的性能（bitonic 的 k 最大只能到 512）
-        uint log2_new_len = log2_32(h_new_len);
-        if (k <= 512 && log2_new_len < 19) {
-            // 使用 bitonic top-k 算法，搜索长度必须是 2 的幂
-            num_items = (h_new_len - (1 << log2_new_len)) ? (2 << log2_new_len) : (1 << log2_new_len);
-            if (num_items - h_new_len)
-                cudaMemset(d_keys_in + h_new_len, 0, sizeof(KeyT) * (num_items - h_new_len));  
-                // <to do>: 如果数据集中top-k有负数会出问题
-            use_bitonic = true;
+        num_items = h_new_len;
+
+        // 填充耗时比较多, 所以舍弃
+        // 在搜索的总数据量小于等于 2^19 时，bitonic 有更好的性能
+        uint new_log2_n = log2_32(h_new_len);
+        if (k <= 1024 && new_log2_n < 18) {
+            // 但是该算法数据集大小必须是 2 的幂
+            if (num_items > (1 << new_log2_n)) {
+                // 用 threshold 将数组填充到 2 的幂
+                uint fill_num = (2 << new_log2_n) - num_items;
+                uint block_size = min(fill_num, 256);
+                uint block_num = (fill_num + GROUP_SIZE * block_size - 1) / GROUP_SIZE * block_size;
+                MemFull<KeyT, GROUP_SIZE><<<block_num, block_size>>>(d_keys_in + h_new_len, threshold, fill_num);
+                num_items = 2 << new_log2_n;
+            }
         }
-    } else {
-        // 未进行 threshold 筛选
-        use_bitonic = (k <= 512) && (log2_n <= 19) && (num_items & ((1 << log2_n) - 1) != 0);
     }
 
-    if (use_bitonic)
-        bitonicTopK(d_keys_in, num_items, k, d_keys_out, g_allocator);
-    else
-        radixSelectTopK(d_keys_in, num_items, k, d_keys_out, g_allocator);
-
+    out_items = k;
+    if (num_items <= k) {
+        // 筛选后的数据量已小于 k 个
+        out_items = num_items;
+        cudaMemcpy(d_keys_out, d_keys_in, num_items * sizeof(KeyT), cudaMemcpyDeviceToDevice);
+    } else {
+        log2_n = log2_32(num_items);
+        // 在搜索的总数据量小于等于 2^19 时，bitonic 有更好的性能
+        if (log2_n < 10)
+            sortTopK(d_keys_in, num_items, k, d_keys_out, out_items, g_allocator);
+        else if (num_items == (1 << log2_n) && k <= 1024 && log2_n <= 18)
+            bitonicTopK(d_keys_in, num_items, k, d_keys_out, out_items, g_allocator);
+        else
+            radixSelectTopK(d_keys_in, num_items, k, d_keys_out, out_items, g_allocator);
+    }
     return cudaSuccess;
 }
+
+// template <typename KeyT>
+// cudaError_t testTimeFindMax(KeyT* d_keys_in, unsigned int num_items, unsigned int k, KeyT* d_keys_out, uint m_log,
+//                      CachingDeviceAllocator& g_allocator) {
+// uint log2_n = log2_32(num_items);
+// uint log2_k = log2_32(k);
+// uint log2_r = m_log;
+// uint loop_times = 1;
+
+// if (loop_times > 0) {
+//     uint random_size = (log2_r <= GROUP_SHIFT) ? 1 : (1 << (log2_r - GROUP_SHIFT));
+//     uint mod = (uint)((1 << log2_n) - 1) - (GROUP_SIZE - 1);
+//     uint block_size = min(random_size, 256);
+//     KeyT h_max[3];
+
+//     // 设置随机数种子
+//     timeval t1;
+//     gettimeofday(&t1, NULL);
+//     unsigned long long seed = t1.tv_usec * t1.tv_sec;
+//     srand(seed);
+
+//     if (log2_r >= 21) {
+//         // 用 kernel 取数并寻找 max
+//         uint* d_random_order;
+//         KeyT* d_random_keys;
+//         KeyT* d_max;
+//         // 申请空间
+//         CubDebugExit(g_allocator.DeviceAllocate((void**)&d_random_order, sizeof(uint) * (random_size)));
+//         CubDebugExit(g_allocator.DeviceAllocate((void**)&d_random_keys, sizeof(KeyT) * (random_size)));
+//         CubDebugExit(g_allocator.DeviceAllocate((void**)&d_max, sizeof(KeyT) * loop_times));
+
+//         for (int i = 0; i < loop_times; i++) {
+//             // 生成随机的 radom_size 个数据
+//             curandGenerator_t generator;
+//             curandCreateGenerator(&generator, CURAND_RNG_PSEUDO_DEFAULT);
+//             curandSetPseudoRandomGeneratorSeed(generator, seed);
+//             curandGenerate(generator, d_random_order, random_size);
+//             curandDestroyGenerator(generator);
+
+//             // 将输入数据 d_keys_in 划分为 16 个一组，从 d_keys_in 中取 random_size 个组，每个线程取 16 个数，将最大的输出到 d_random_keys
+//             getRandomData<KeyT, GROUP_SIZE><<<random_size / block_size, block_size>>>(d_keys_in, d_random_order, d_random_keys, mod);
+//             // 找出 d_random_keys 中最大值
+//             void* d_temp_storage = NULL;
+//             size_t temp_storage_bytes = 0;
+//             DeviceReduce::Max(d_temp_storage, temp_storage_bytes, d_random_keys, d_max + i, random_size);
+//             CubDebugExit(g_allocator.DeviceAllocate((void**)&d_temp_storage, temp_storage_bytes));
+//             DeviceReduce::Max(d_temp_storage, temp_storage_bytes, d_random_keys, d_max + i, random_size);
+//             CubDebugExit(g_allocator.DeviceFree(d_temp_storage));
+//         }
+
+//         cudaMemcpy(h_max, d_max, sizeof(KeyT) * loop_times, cudaMemcpyDeviceToHost);
+//         CubDebugExit(g_allocator.DeviceFree(d_random_order));
+//         CubDebugExit(g_allocator.DeviceFree(d_random_keys));
+//         CubDebugExit(g_allocator.DeviceFree(d_max));
+//     } else if (log2_r >= 6) {
+//         // 用 kernel 取数并寻找 max
+//         uint* d_random_order;
+//         KeyT* d_random_keys;
+//         KeyT* d_max;
+//         // 申请空间
+//         CubDebugExit(g_allocator.DeviceAllocate((void**)&d_random_order, sizeof(uint) * (random_size)));
+//         CubDebugExit(g_allocator.DeviceAllocate((void**)&d_random_keys, sizeof(KeyT) * (random_size)));
+//         CubDebugExit(g_allocator.DeviceAllocate((void**)&d_max, sizeof(KeyT) * loop_times));
+//         uint* h_random_order = (uint*)malloc(sizeof(uint) * random_size);
+
+//         for (int i = 0; i < loop_times; i++) {
+//             // 生成随机的 radom_size 个数据
+//             if (log2_r >= 22) {
+//                 curandGenerator_t generator;
+//                 curandCreateGenerator(&generator, CURAND_RNG_PSEUDO_DEFAULT);
+//                 curandSetPseudoRandomGeneratorSeed(generator, seed);
+//                 curandGenerate(generator, d_random_order, random_size);
+//                 curandDestroyGenerator(generator);
+//             }
+//             for (int j = 0; j < random_size; j++) h_random_order[j] = rand();
+//             cudaMemcpy(d_random_order, h_random_order, sizeof(uint) * random_size, cudaMemcpyHostToDevice);
+//             // 将输入数据 d_keys_in 划分为 16 个一组，从 d_keys_in 中取 random_size 个组，每个线程取 16 个数，将最大的输出到 d_random_keys
+//             getRandomData<KeyT, GROUP_SIZE><<<random_size / block_size, block_size>>>(d_keys_in, d_random_order, d_random_keys, mod);
+//             // 找出 d_random_keys 中最大值
+//             void* d_temp_storage = NULL;
+//             size_t temp_storage_bytes = 0;
+//             DeviceReduce::Max(d_temp_storage, temp_storage_bytes, d_random_keys, d_max + i, random_size);
+//             CubDebugExit(g_allocator.DeviceAllocate((void**)&d_temp_storage, temp_storage_bytes));
+//             DeviceReduce::Max(d_temp_storage, temp_storage_bytes, d_random_keys, d_max + i, random_size);
+//             CubDebugExit(g_allocator.DeviceFree(d_temp_storage));
+//         }
+
+//         cudaMemcpy(h_max, d_max, sizeof(KeyT) * loop_times, cudaMemcpyDeviceToHost);
+//         CubDebugExit(g_allocator.DeviceFree(d_random_order));
+//         CubDebugExit(g_allocator.DeviceFree(d_random_keys));
+//         CubDebugExit(g_allocator.DeviceFree(d_max));
+//         free(h_random_order);
+//     } else {
+//         // 用 CPU 取数并寻找 max
+//         for (int i = 0; i < loop_times; i++) {
+//             // 生成随机的 radom_size 个数据
+//             KeyT x[GROUP_SIZE];
+//             int size = 1 << ((log2_r < GROUP_SHIFT) ? log2_r : GROUP_SHIFT);
+//             for (uint offset = 0; offset < random_size; offset++) {
+//                 int order = rand() & mod;
+//                 cudaMemcpy(x, d_keys_in + order, sizeof(KeyT) * size, cudaMemcpyDeviceToHost);
+//                 if (offset == 0 || h_max[i] < x[0]) h_max[i] = x[0];
+//                 for (int j = 1; j < size; j++)
+//                     if (h_max[i] < x[j]) h_max[i] = x[j];
+//             }
+//         }
+//     }
+
+//     // 寻找 h_max 中的中位数
+//     sort(h_max, h_max + loop_times);
+//     threshold = h_max[loop_times / 2];
+
+// // 分配空间
+// uint* d_new_len;
+// uint h_new_len;
+// CubDebugExit(g_allocator.DeviceAllocate((void**)&d_new_len, sizeof(uint)));
+// cudaMemset(d_new_len, 0, sizeof(uint));
+// KeyT threshold = (KeyT)0;
+
+// // // 寻找大于等于 threshold 的元素，为 h_new_len，放入原数组的空间
+// uint elem_pb = SELECT_GE_BLOCK_SIZE * SELECT_GE_ELEM_PT;
+// uint block_num = (num_items + elem_pb - 1) / elem_pb;
+// uint block_size = SELECT_GE_BLOCK_SIZE;
+// selectGeThreshold<KeyT, SELECT_GE_ELEM_PT, SELECT_GE_BLOCK_SIZE><<<block_num, block_size>>>(d_keys_in, num_items, threshold, d_new_len);
+// cudaMemcpy(&h_new_len, d_new_len, sizeof(uint), cudaMemcpyDeviceToHost);
+// CubDebugExit(g_allocator.DeviceFree(d_new_len));
+
+// // 更新数组大小
+
+// num_items = h_new_len;
+
+// 填充耗时比较多, 所以舍弃
+// 在搜索的总数据量小于等于 2^19 时，bitonic 有更好的性能
+// uint new_log2_n = log2_32(h_new_len);
+// if (k <= 1024 && new_log2_n < 19) {
+//     // 但是该算法数据集大小必须是 2 的幂
+//     if (num_items > (1 << new_log2_n)) {
+//         // 用 threshold 将数组填充到 2 的幂
+//         uint fill_num = (2 << new_log2_n) - num_items;
+//         uint block_size = min(fill_num, 256);
+//         uint block_num = (fill_num + GROUP_SIZE * block_size - 1) / GROUP_SIZE * block_size;
+//         MemFull<KeyT, GROUP_SIZE><<<block_num, block_size>>>(d_keys_in + h_new_len, threshold, fill_num);
+//         num_items = 2 << new_log2_n;
+//     }
+// }
+// }
+
+// out_items = k;
+// if (num_items <= k) {
+//     // 筛选后的数据量已小于 k 个
+//     out_items = num_items;
+//     cudaMemcpy(d_keys_out, d_keys_in, num_items * sizeof(KeyT), cudaMemcpyDeviceToDevice);
+// } else {
+//     log2_n = log2_32(num_items);
+//     // 在搜索的总数据量小于等于 2^19 时，bitonic 有更好的性能
+//     if (num_items == (1 << log2_n) && k <= 1024 && log2_n <= 19)
+//         bitonicTopK(d_keys_in, num_items, k, d_keys_out, out_items, g_allocator);
+//     else
+//         radixSelectTopK(d_keys_in, num_items, k, d_keys_out, out_items, g_allocator);
+// }
+//     return cudaSuccess;
+// }

@@ -1,3 +1,5 @@
+#pragma once
+
 #include <cuda.h>
 #include <cub/device/device_radix_sort.cuh>
 #include <cub/util_allocator.cuh>
@@ -6,8 +8,9 @@ using namespace std;
 using namespace cub;
 
 template <typename KeyT>
-cudaError_t sortTopK(KeyT *d_keys_in, unsigned int num_items, unsigned int k, KeyT *d_keys_out,
+cudaError_t sortTopK(KeyT *d_keys_in, unsigned int num_items, unsigned int k, KeyT *d_keys_out, unsigned int &out_items,
                      CachingDeviceAllocator &g_allocator) {
+    out_items = k;
     // Allocate device memory for input/output
     // 定义一个双缓冲区d_keys，缓冲区0指向输入数组d_keys_in，缓冲区1指向device新分配的sizeof(KeyT)*num_items空间
     DoubleBuffer<KeyT> d_keys;
