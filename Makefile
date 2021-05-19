@@ -30,7 +30,7 @@ INCLUDES := -I$(CUB_DIR) -I$(SOURCE_DIR) -I$(TEST_DIR)
 #	$(NVCC) $(CFLAGS) -I. $(INCLUDES) -g $(GENCODE_FLAGS) $< -o $@
 
 compareTopKAlgorithms: test/compareTopKAlgorithms.cu src/bitonicTopK.cuh src/radixSelectTopK.cuh src/sortTopK.cuh \
-                       src/bitonicUsing.cuh src/thresholdTopK.cuh src/impreciseBitonicTopK.cuh \
+                       src/bitonicUsing.cuh src/thresholdTopK.cuh src/localMaxTopK.cuh \
                        test/sort.cuh test/generateProblems.cuh
 	$(NVCC) $(CFLAGS) $(INCLUDES) test/compareTopKAlgorithms.cu $(LDFLAGS) -o compareTopKAlgorithms
 

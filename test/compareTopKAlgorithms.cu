@@ -22,12 +22,12 @@
 #include "radixSelectTopK.cuh"
 #include "bitonicTopK.cuh"
 #include "thresholdTopK.cuh"
-#include "impreciseBitonicTopK.cuh"
+#include "localMaxTopK.cuh"
 // #include "testTime.cuh"
 
 #define NEED_PRINT_EVERY_TESTING false
 #define NEED_PRINT_DIFF false
-#define NEED_ANALYSIS false
+#define NEED_ANALYSIS true
 
 #define SETUP_TIMING()       \
     cudaEvent_t start, stop; \
@@ -51,23 +51,23 @@
         "Radix Select",                                                                                   \
         "Bitonic TopK",                                                                                   \
         "Threshold TopK",                                                                                 \
-        "Imprecise Bitonic",                                                                              \
+        "Local Max TopK",                                                                                 \
     };                                                                                                    \
     ptrToTimingFunction arrayOfTimingFunctions[NUMBEROFALGORITHMS] = {                                    \
         &sortTopK<KeyT>,                                                                                  \
         &radixSelectTopK<KeyT>,                                                                           \
         &bitonicTopK<KeyT>,                                                                               \
         &thresholdTopK<KeyT>,                                                                             \
-        &impreciseBitonicTopK<KeyT>,                                                                      \
+        &localMaxTopK<KeyT>,                                                                              \
     };
 #define SET_ALGORITHMS_RUN()                            \
     {                                                   \
         fill_n(algorithmsToRun, NUMBEROFALGORITHMS, 1); \
-        algorithmsToRun[0] = (NEED_PRINT_DIFF) ? 1 : 1; \
+        algorithmsToRun[0] = (NEED_PRINT_DIFF) ? 1 : 0; \
         algorithmsToRun[1] = 1;                         \
         algorithmsToRun[2] = 1;                         \
-        algorithmsToRun[3] = 0;                         \
-        algorithmsToRun[4] = 0;                         \
+        algorithmsToRun[3] = 1;                         \
+        algorithmsToRun[4] = 1;                         \
     }
 
 using namespace std;
@@ -126,11 +126,11 @@ void compareAlgorithms(uint size, uint k, uint numTests, uint* algorithmsToTest,
     double avg_topk_rate[NUMBEROFALGORITHMS];   // 所有 numTests 个测试结果中正确 top-k 的比例均值
     fill_n(total_topk_times, NUMBEROFALGORITHMS, 0);
 
-    uint tolerance = 2;                                                   // 评价指标容忍度
-    long int weight = ((long int)(tolerance * k * 2 - (k - 1)) * k) / 2;  // 评价指标标准化权重
-    long int sum_noWeight_analyze_1[NUMBEROFALGORITHMS];                  // 所有 numTests 个无权评价指标之和
-    double avg_analyze_1[NUMBEROFALGORITHMS];                             // 所有 numTests 个有权评价指标的均值
-    fill_n(sum_noWeight_analyze_1, NUMBEROFALGORITHMS, 0);
+    uint tolerance = 4;                                             // 评价指标容忍度
+    long int weight = ((long int)(tolerance * k * 2 - k) * k) / 2;  // 评价指标标准化权重
+    long double sum_noWeight_analyze_1[NUMBEROFALGORITHMS];         // 所有 numTests 个无权评价指标之和
+    long double avg_analyze_1[NUMBEROFALGORITHMS];                  // 所有 numTests 个有权评价指标的均值
+    for (int i = 0; i < NUMBEROFALGORITHMS; i++) sum_noWeight_analyze_1[i] = 0;
 
     bool res_error[NUMBEROFALGORITHMS];  // 结果中出现了原数据中没有的数，或者出现次数大于原数据中出现的次数，判定该算法出错
     fill_n(res_error, NUMBEROFALGORITHMS, false);
@@ -222,7 +222,7 @@ void compareAlgorithms(uint size, uint k, uint numTests, uint* algorithmsToTest,
                         res_error[j] = true;
                         break;
                     } else {
-                        sum_noWeight_analyze_1[j] += (int)(tolerance * k) - (int)sort_idx;
+                        sum_noWeight_analyze_1[j] += (long double)(tolerance * k) - (long double)sort_idx - 0.5;
                         if (sort_idx < k) total_topk_times[j]++;
                     }
                     sort_idx++;
@@ -236,7 +236,7 @@ void compareAlgorithms(uint size, uint k, uint numTests, uint* algorithmsToTest,
     for (j = 0; j < NUMBEROFALGORITHMS; j++) {
         if (algorithmsToTest[j]) {
             if (!res_error[j]) {
-                avg_analyze_1[j] = sum_noWeight_analyze_1[j] / (double)(weight * numTests);
+                avg_analyze_1[j] = sum_noWeight_analyze_1[j] / (long double)(weight * numTests);
                 avg_topk_rate[j] = total_topk_times[j] / (double)(numTests * k);
             }
             avg_out_k[j] = accumulate(out_k[j], out_k[j] + numTests, 0.0) / (double)numTests;
@@ -293,7 +293,7 @@ void compareAlgorithms(uint size, uint k, uint numTests, uint* algorithmsToTest,
             if (res_error[i])
                 printf(" %-15s %-15s", "ERROR", "ERROR");
             else
-                printf(" %-15.4f %-15f", avg_topk_rate[i] * 100, avg_analyze_1[i]);
+                printf(" %-15.4f %-15Lf", avg_topk_rate[i] * 100, avg_analyze_1[i]);
 #endif
             printf("\n");
         }
