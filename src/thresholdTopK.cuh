@@ -251,7 +251,7 @@ cudaError_t thresholdTopK(KeyT* d_keys_in, unsigned int num_items, unsigned int 
         // 填充耗时比较多, 所以舍弃
         // 在搜索的总数据量小于等于 2^19 时，bitonic 有更好的性能
         uint new_log2_n = log2_32(h_new_len);
-        if (k <= 1024 && new_log2_n < 18) {
+        if (num_items > k && k <= 1024 && new_log2_n < 18) {
             // 但是该算法数据集大小必须是 2 的幂
             if (num_items > (1 << new_log2_n)) {
                 // 用 threshold 将数组填充到 2 的幂
