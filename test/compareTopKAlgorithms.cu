@@ -64,10 +64,10 @@
     {                                                   \
         fill_n(algorithmsToRun, NUMBEROFALGORITHMS, 1); \
         algorithmsToRun[0] = (NEED_PRINT_DIFF) ? 1 : 0; \
-        algorithmsToRun[1] = 1;                         \
-        algorithmsToRun[2] = 1;                         \
+        algorithmsToRun[1] = 0;                         \
+        algorithmsToRun[2] = 0;                         \
         algorithmsToRun[3] = 1;                         \
-        algorithmsToRun[4] = 1;                         \
+        algorithmsToRun[4] = 0;                         \
     }
 
 using namespace std;
@@ -127,8 +127,8 @@ void compareAlgorithms(uint size, uint k, uint numTests, uint* algorithmsToTest,
     fill_n(total_topk_times, NUMBEROFALGORITHMS, 0);
 
     uint tolerance = 4;                                             // 评价指标容忍度
-    long int weight = ((long int)(tolerance * k * 2 - k) * k) / 2;  // 评价指标标准化权重
-    long double sum_noWeight_analyze_1[NUMBEROFALGORITHMS];         // 所有 numTests 个无权评价指标之和
+    long long int weight = ((long int)(tolerance * k * 2 - k) * k) / 2;  // 评价指标标准化权重
+    long long int sum_noWeight_analyze_1[NUMBEROFALGORITHMS];         // 所有 numTests 个无权评价指标之和
     long double avg_analyze_1[NUMBEROFALGORITHMS];                  // 所有 numTests 个有权评价指标的均值
     for (int i = 0; i < NUMBEROFALGORITHMS; i++) sum_noWeight_analyze_1[i] = 0;
 
@@ -193,7 +193,7 @@ void compareAlgorithms(uint size, uint k, uint numTests, uint* algorithmsToTest,
 
                 // record the value returned
                 cudaMemcpy(resultsArray[j][i], d_res, k * sizeof(KeyT), cudaMemcpyDeviceToHost);
-                std::sort(resultsArray[j][i], resultsArray[j][i] + k, std::greater<KeyT>());
+                std::sort(resultsArray[j][i], resultsArray[j][i] + out_k[j][i], std::greater<KeyT>());
 
                 // update the current "winner" if necessary
                 if (timeArray[j][i] < currentWinningTime) {
@@ -222,7 +222,7 @@ void compareAlgorithms(uint size, uint k, uint numTests, uint* algorithmsToTest,
                         res_error[j] = true;
                         break;
                     } else {
-                        sum_noWeight_analyze_1[j] += (long double)(tolerance * k) - (long double)sort_idx - 0.5;
+                        sum_noWeight_analyze_1[j] += (long long int)(tolerance * k) - (long long int)sort_idx;
                         if (sort_idx < k) total_topk_times[j]++;
                     }
                     sort_idx++;
@@ -235,11 +235,12 @@ void compareAlgorithms(uint size, uint k, uint numTests, uint* algorithmsToTest,
 #if NEED_ANALYSIS
     for (j = 0; j < NUMBEROFALGORITHMS; j++) {
         if (algorithmsToTest[j]) {
+            unsigned long long total_out_keys = accumulate(out_k[j], out_k[j] + numTests, 0);
             if (!res_error[j]) {
-                avg_analyze_1[j] = sum_noWeight_analyze_1[j] / (long double)(weight * numTests);
+                avg_analyze_1[j] = (sum_noWeight_analyze_1[j] - 0.5 * total_out_keys) / (long double)(weight * numTests);
                 avg_topk_rate[j] = total_topk_times[j] / (double)(numTests * k);
             }
-            avg_out_k[j] = accumulate(out_k[j], out_k[j] + numTests, 0.0) / (double)numTests;
+            avg_out_k[j] = total_out_keys / (double)numTests;
         }
     }
     free(h_sort_vec);
@@ -364,6 +365,7 @@ void getParameters(int argc, char** argv,
     const int max_8b_power = 28;
 
     int k = -1, start_power = -1, stop_power = -1;
+    int k_log;
     int test_count = 3;
     parameter[0] = 0;
     parameter[1] = 1;
@@ -377,6 +379,7 @@ void getParameters(int argc, char** argv,
                  SORT_ERROR,
                  TESTCOUNT_ERROR,
                  K_ERROR,
+                 KLOG_ERROR,
                  N_ERROR } error = NO_ERROR;
 
     static struct option long_options[] =
@@ -389,10 +392,11 @@ void getParameters(int argc, char** argv,
             {"sort", 1, NULL, 's'},
             {"startpower", 1, NULL, 'a'},
             {"stoppower", 1, NULL, 'b'},
+            {"klog", 1, NULL, 'l'},
             {NULL, 0, NULL, 0},
         };
     int ch;
-    while ((ch = getopt_long(argc, argv, "t:d:s:k:a:b:c:1:2:", long_options, NULL)) != -1) {
+    while ((ch = getopt_long(argc, argv, "t:d:s:k:l:a:b:c:1:2:", long_options, NULL)) != -1) {
         if (error != NO_ERROR) break;
         switch (ch) {
             case 't':  // type
@@ -435,6 +439,13 @@ void getParameters(int argc, char** argv,
                 k = atoi(optarg);
                 if (k <= 0)
                     error = K_ERROR;
+                break;
+            case 'l':  // klog
+                k_log = atoi(optarg);
+                if (k_log < 0)
+                    error = KLOG_ERROR;
+                else
+                    k = 1 << k_log;
                 break;
             case 'c':  // test_count
                 test_count = atoi(optarg);
@@ -500,8 +511,16 @@ void getParameters(int argc, char** argv,
         cerr << "error: k 值必须为正整数\n";
         exit(1);
     }
+    if (error == KLOG_ERROR) {
+        cerr << "error: k log 值必须为非负整数\n";
+        exit(1);
+    }
     if (k == -1) {
-        cerr << "error: 请输入 k 值，如: -k 32\n";
+        cerr << "error: 请输入 k 值，如: -k 32，或输入 log2(k)，如 --klog=5\n";
+        exit(1);
+    }
+    if (k == 0) {
+        cerr << "error: klog 值过大\n";
         exit(1);
     }
     if (log2_32(k) + 1 > max_power) {
