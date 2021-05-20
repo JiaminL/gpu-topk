@@ -135,7 +135,8 @@ __global__ void selectGeThreshold(KeyT* d_keys, uint num_items, KeyT threshold, 
 #define GROUP_SHIFT 4
 template <typename KeyT, uint KeyPerT>
 __global__ void MemFull(KeyT* d_keys, KeyT threshold, uint fill_num) {
-    uint offset = (blockIdx.x * blockDim.x + threshold) * KeyPerT;
+    uint offset = (blockIdx.x * blockDim.x + threadIdx.x) * KeyPerT;
+    d_keys += offset;
     if (fill_num > offset) {
         if (fill_num - offset > KeyPerT)
             for (int i = 0; i < KeyPerT; ++i) d_keys[i] = threshold;
@@ -256,7 +257,7 @@ cudaError_t thresholdTopK(KeyT* d_keys_in, unsigned int num_items, unsigned int 
                 // 用 threshold 将数组填充到 2 的幂
                 uint fill_num = (2 << new_log2_n) - num_items;
                 uint block_size = min(fill_num, 256);
-                uint block_num = (fill_num + GROUP_SIZE * block_size - 1) / GROUP_SIZE * block_size;
+                uint block_num = (fill_num + GROUP_SIZE * block_size - 1) / (GROUP_SIZE * block_size);
                 MemFull<KeyT, GROUP_SIZE><<<block_num, block_size>>>(d_keys_in + h_new_len, threshold, fill_num);
                 num_items = 2 << new_log2_n;
             }
