@@ -126,8 +126,8 @@ void compareAlgorithms(uint size, uint k, uint numTests, uint* algorithmsToTest,
     double avg_topk_rate[NUMBEROFALGORITHMS];   // 所有 numTests 个测试结果中正确 top-k 的比例均值
     fill_n(total_topk_times, NUMBEROFALGORITHMS, 0);
 
-    uint tolerance = 4;                                             // 评价指标容忍度
-    long long int weight = ((long int)(tolerance * k * 2 - k) * k) / 2;  // 评价指标标准化权重
+    uint tolerance = 2;                                             // 评价指标容忍度
+    long double weight = ((long double)(tolerance * k * 2 - k) * k) / 2.0;  // 评价指标标准化权重
     long long int sum_noWeight_analyze_1[NUMBEROFALGORITHMS];         // 所有 numTests 个无权评价指标之和
     long double avg_analyze_1[NUMBEROFALGORITHMS];                  // 所有 numTests 个有权评价指标的均值
     for (int i = 0; i < NUMBEROFALGORITHMS; i++) sum_noWeight_analyze_1[i] = 0;
@@ -219,6 +219,8 @@ void compareAlgorithms(uint size, uint k, uint numTests, uint* algorithmsToTest,
                 for (uint res_idx = 0, sort_idx = 0; res_idx < out_k[j][i]; res_idx++) {
                     while (sort_idx < size && h_sort_vec[sort_idx] != resultsArray[j][i][res_idx]) sort_idx++;
                     if (sort_idx == size) {
+                        printf("seed: %llu", seed);
+                        for (uint idx = 0; idx < out_k[j][i]; idx++) cout << resultsArray[j][i][idx] << " " << h_sort_vec[idx] << endl;
                         res_error[j] = true;
                         break;
                     } else {
@@ -237,7 +239,7 @@ void compareAlgorithms(uint size, uint k, uint numTests, uint* algorithmsToTest,
         if (algorithmsToTest[j]) {
             unsigned long long total_out_keys = accumulate(out_k[j], out_k[j] + numTests, 0);
             if (!res_error[j]) {
-                avg_analyze_1[j] = (sum_noWeight_analyze_1[j] - 0.5 * total_out_keys) / (long double)(weight * numTests);
+                avg_analyze_1[j] = (sum_noWeight_analyze_1[j] - 0.5 * total_out_keys) / (weight * numTests);
                 avg_topk_rate[j] = total_topk_times[j] / (double)(numTests * k);
             }
             avg_out_k[j] = total_out_keys / (double)numTests;
