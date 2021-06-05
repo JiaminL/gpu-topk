@@ -44,7 +44,7 @@ cudaError_t localMaxTopK(KeyT *d_keys_in, unsigned int num_items, unsigned int k
                          CachingDeviceAllocator &g_allocator) {
     out_items = k;
 
-    if (num_items >= 64 * k) {
+    if (num_items >= 32 * k) {
         uint block_size = 1024;
         getLocalMax2<KeyT, LOCAL_MAX_KPT, LOCAL_MAX_ITEMS><<<num_items / block_size / LOCAL_MAX_KPT / LOCAL_MAX_ITEMS, block_size>>>(d_keys_in);
         num_items /= LOCAL_MAX_ITEMS;
