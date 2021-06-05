@@ -66,32 +66,32 @@ void sort_keys(KeyT* d_vec, const unsigned int num_keys, CachingDeviceAllocator&
 ///////////////////////////////////////////////////////////////////
 // 均匀分布
 void generateUniformUints(uint* d_vec, uint num_keys, curandGenerator_t generator,
-                          CachingDeviceAllocator& g_allocator, double* paramters) {
+                          CachingDeviceAllocator& g_allocator, double* parameters) {
     curandGenerate(generator, d_vec, num_keys);
 }
 void generateSortedIncUniformUints(uint* d_vec, uint num_keys, curandGenerator_t generator,
-                                   CachingDeviceAllocator& g_allocator, double* paramters) {
+                                   CachingDeviceAllocator& g_allocator, double* parameters) {
     curandGenerate(generator, d_vec, num_keys);
     sort_keys(d_vec, num_keys, g_allocator, true);
 }
 void generateSortedDecUniformUints(uint* d_vec, uint num_keys, curandGenerator_t generator,
-                                   CachingDeviceAllocator& g_allocator, double* paramters) {
+                                   CachingDeviceAllocator& g_allocator, double* parameters) {
     curandGenerate(generator, d_vec, num_keys);
     sort_keys(d_vec, num_keys, g_allocator, false);
 }
 // 泊松分布
 void generatePoissonUints(uint* d_vec, uint num_keys, curandGenerator_t generator,
-                          CachingDeviceAllocator& g_allocator, double* paramters) {
-    curandGeneratePoisson(generator, d_vec, num_keys, paramters[0]);
+                          CachingDeviceAllocator& g_allocator, double* parameters) {
+    curandGeneratePoisson(generator, d_vec, num_keys, parameters[0]);
 }
 void generateSortedIncPoissonUints(uint* d_vec, uint num_keys, curandGenerator_t generator,
-                                   CachingDeviceAllocator& g_allocator, double* paramters) {
-    curandGeneratePoisson(generator, d_vec, num_keys, paramters[0]);
+                                   CachingDeviceAllocator& g_allocator, double* parameters) {
+    curandGeneratePoisson(generator, d_vec, num_keys, parameters[0]);
     sort_keys(d_vec, num_keys, g_allocator, true);
 }
 void generateSortedDecPoissonUints(uint* d_vec, uint num_keys, curandGenerator_t generator,
-                                   CachingDeviceAllocator& g_allocator, double* paramters) {
-    curandGeneratePoisson(generator, d_vec, num_keys, paramters[0]);
+                                   CachingDeviceAllocator& g_allocator, double* parameters) {
+    curandGeneratePoisson(generator, d_vec, num_keys, parameters[0]);
     sort_keys(d_vec, num_keys, g_allocator, false);
 }
 
@@ -100,16 +100,16 @@ void generateSortedDecPoissonUints(uint* d_vec, uint num_keys, curandGenerator_t
 ///////////////////////////////////////////////////////////////////
 // 均匀分布
 void generateUniformUlongs(unsigned long long* d_vec, uint num_keys, curandGenerator_t generator,
-                           CachingDeviceAllocator& g_allocator, double* paramters) {
+                           CachingDeviceAllocator& g_allocator, double* parameters) {
     curandGenerateLongLong(generator, d_vec, num_keys);
 }
 void generateSortedIncUniformUlongs(unsigned long long* d_vec, uint num_keys, curandGenerator_t generator,
-                                    CachingDeviceAllocator& g_allocator, double* paramters) {
+                                    CachingDeviceAllocator& g_allocator, double* parameters) {
     curandGenerateLongLong(generator, d_vec, num_keys);
     sort_keys(d_vec, num_keys, g_allocator, true);
 }
 void generateSortedDecUniformUlongs(unsigned long long* d_vec, uint num_keys, curandGenerator_t generator,
-                                    CachingDeviceAllocator& g_allocator, double* paramters) {
+                                    CachingDeviceAllocator& g_allocator, double* parameters) {
     curandGenerateLongLong(generator, d_vec, num_keys);
     sort_keys(d_vec, num_keys, g_allocator, false);
 }
@@ -119,16 +119,16 @@ void generateSortedDecUniformUlongs(unsigned long long* d_vec, uint num_keys, cu
 ///////////////////////////////////////////////////////////////////
 // 均匀分布
 void generateUniformInts(int* d_vec, uint num_keys, curandGenerator_t generator,
-                         CachingDeviceAllocator& g_allocator, double* paramters) {
+                         CachingDeviceAllocator& g_allocator, double* parameters) {
     curandGenerate(generator, (uint*)d_vec, num_keys);
 }
 void generateSortedIncUniformInts(int* d_vec, uint num_keys, curandGenerator_t generator,
-                                  CachingDeviceAllocator& g_allocator, double* paramters) {
+                                  CachingDeviceAllocator& g_allocator, double* parameters) {
     curandGenerate(generator, (uint*)d_vec, num_keys);
     sort_keys(d_vec, num_keys, g_allocator, true);
 }
 void generateSortedDecUniformInts(int* d_vec, uint num_keys, curandGenerator_t generator,
-                                  CachingDeviceAllocator& g_allocator, double* paramters) {
+                                  CachingDeviceAllocator& g_allocator, double* parameters) {
     curandGenerate(generator, (uint*)d_vec, num_keys);
     sort_keys(d_vec, num_keys, g_allocator, false);
 }
@@ -138,16 +138,16 @@ void generateSortedDecUniformInts(int* d_vec, uint num_keys, curandGenerator_t g
 ///////////////////////////////////////////////////////////////////
 // 均匀分布
 void generateUniformLongs(long long* d_vec, uint num_keys, curandGenerator_t generator,
-                          CachingDeviceAllocator& g_allocator, double* paramters) {
+                          CachingDeviceAllocator& g_allocator, double* parameters) {
     curandGenerateLongLong(generator, (unsigned long long*)d_vec, num_keys);
 }
 void generateSortedIncUniformLongs(long long* d_vec, uint num_keys, curandGenerator_t generator,
-                                   CachingDeviceAllocator& g_allocator, double* paramters) {
+                                   CachingDeviceAllocator& g_allocator, double* parameters) {
     curandGenerateLongLong(generator, (unsigned long long*)d_vec, num_keys);
     sort_keys(d_vec, num_keys, g_allocator, true);
 }
 void generateSortedDecUniformLongs(long long* d_vec, uint num_keys, curandGenerator_t generator,
-                                   CachingDeviceAllocator& g_allocator, double* paramters) {
+                                   CachingDeviceAllocator& g_allocator, double* parameters) {
     curandGenerateLongLong(generator, (unsigned long long*)d_vec, num_keys);
     sort_keys(d_vec, num_keys, g_allocator, false);
 }
@@ -157,47 +157,47 @@ void generateSortedDecUniformLongs(long long* d_vec, uint num_keys, curandGenera
 ///////////////////////////////////////////////////////////////////
 // U(0, 1) 均匀分布
 void generateUniformFloats(float* d_vec, uint num_keys, curandGenerator_t generator,
-                           CachingDeviceAllocator& g_allocator, double* paramters) {
+                           CachingDeviceAllocator& g_allocator, double* parameters) {
     curandGenerateUniform(generator, d_vec, num_keys);
 }
 void generateSortedIncUniformFloats(float* d_vec, uint num_keys, curandGenerator_t generator,
-                                    CachingDeviceAllocator& g_allocator, double* paramters) {
+                                    CachingDeviceAllocator& g_allocator, double* parameters) {
     curandGenerateUniform(generator, d_vec, num_keys);
     sort_keys(d_vec, num_keys, g_allocator, true);
 }
 void generateSortedDecUniformFloats(float* d_vec, uint num_keys, curandGenerator_t generator,
-                                    CachingDeviceAllocator& g_allocator, double* paramters) {
+                                    CachingDeviceAllocator& g_allocator, double* parameters) {
     curandGenerateUniform(generator, d_vec, num_keys);
     sort_keys(d_vec, num_keys, g_allocator, false);
 }
 // 正态分布
 void generateNormalFloats(float* d_vec, uint num_keys, curandGenerator_t generator,
-                          CachingDeviceAllocator& g_allocator, double* paramters) {
-    curandGenerateNormal(generator, d_vec, num_keys, paramters[0], paramters[1]);
+                          CachingDeviceAllocator& g_allocator, double* parameters) {
+    curandGenerateNormal(generator, d_vec, num_keys, parameters[0], parameters[1]);
 }
 void generateSortedIncNormalFloats(float* d_vec, uint num_keys, curandGenerator_t generator,
-                                   CachingDeviceAllocator& g_allocator, double* paramters) {
-    curandGenerateNormal(generator, d_vec, num_keys, paramters[0], paramters[1]);
+                                   CachingDeviceAllocator& g_allocator, double* parameters) {
+    curandGenerateNormal(generator, d_vec, num_keys, parameters[0], parameters[1]);
     sort_keys(d_vec, num_keys, g_allocator, true);
 }
 void generateSortedDecNormalFloats(float* d_vec, uint num_keys, curandGenerator_t generator,
-                                   CachingDeviceAllocator& g_allocator, double* paramters) {
-    curandGenerateNormal(generator, d_vec, num_keys, paramters[0], paramters[1]);
+                                   CachingDeviceAllocator& g_allocator, double* parameters) {
+    curandGenerateNormal(generator, d_vec, num_keys, parameters[0], parameters[1]);
     sort_keys(d_vec, num_keys, g_allocator, false);
 }
 // 对数正态分布
 void generateLogNormalFloats(float* d_vec, uint num_keys, curandGenerator_t generator,
-                             CachingDeviceAllocator& g_allocator, double* paramters) {
-    curandGenerateLogNormal(generator, d_vec, num_keys, paramters[0], paramters[1]);
+                             CachingDeviceAllocator& g_allocator, double* parameters) {
+    curandGenerateLogNormal(generator, d_vec, num_keys, parameters[0], parameters[1]);
 }
 void generateSortedIncLogNormalFloats(float* d_vec, uint num_keys, curandGenerator_t generator,
-                                      CachingDeviceAllocator& g_allocator, double* paramters) {
-    curandGenerateLogNormal(generator, d_vec, num_keys, paramters[0], paramters[1]);
+                                      CachingDeviceAllocator& g_allocator, double* parameters) {
+    curandGenerateLogNormal(generator, d_vec, num_keys, parameters[0], parameters[1]);
     sort_keys(d_vec, num_keys, g_allocator, true);
 }
 void generateSortedDecLogNormalFloats(float* d_vec, uint num_keys, curandGenerator_t generator,
-                                      CachingDeviceAllocator& g_allocator, double* paramters) {
-    curandGenerateLogNormal(generator, d_vec, num_keys, paramters[0], paramters[1]);
+                                      CachingDeviceAllocator& g_allocator, double* parameters) {
+    curandGenerateLogNormal(generator, d_vec, num_keys, parameters[0], parameters[1]);
     sort_keys(d_vec, num_keys, g_allocator, false);
 }
 
@@ -206,47 +206,47 @@ void generateSortedDecLogNormalFloats(float* d_vec, uint num_keys, curandGenerat
 ///////////////////////////////////////////////////////////////////
 // U(0, 1) 均匀分布
 void generateUniformDoubles(double* d_vec, uint num_keys, curandGenerator_t generator,
-                            CachingDeviceAllocator& g_allocator, double* paramters) {
+                            CachingDeviceAllocator& g_allocator, double* parameters) {
     curandGenerateUniformDouble(generator, d_vec, num_keys);
 }
 void generateSortedIncUniformDoubles(double* d_vec, uint num_keys, curandGenerator_t generator,
-                                     CachingDeviceAllocator& g_allocator, double* paramters) {
+                                     CachingDeviceAllocator& g_allocator, double* parameters) {
     curandGenerateUniformDouble(generator, d_vec, num_keys);
     sort_keys(d_vec, num_keys, g_allocator, true);
 }
 void generateSortedDecUniformDoubles(double* d_vec, uint num_keys, curandGenerator_t generator,
-                                     CachingDeviceAllocator& g_allocator, double* paramters) {
+                                     CachingDeviceAllocator& g_allocator, double* parameters) {
     curandGenerateUniformDouble(generator, d_vec, num_keys);
     sort_keys(d_vec, num_keys, g_allocator, false);
 }
 // 正态分布
 void generateNormalDoubles(double* d_vec, uint num_keys, curandGenerator_t generator,
-                           CachingDeviceAllocator& g_allocator, double* paramters) {
-    curandGenerateNormalDouble(generator, d_vec, num_keys, paramters[0], paramters[1]);
+                           CachingDeviceAllocator& g_allocator, double* parameters) {
+    curandGenerateNormalDouble(generator, d_vec, num_keys, parameters[0], parameters[1]);
 }
 void generateSortedIncNormalDoubles(double* d_vec, uint num_keys, curandGenerator_t generator,
-                                    CachingDeviceAllocator& g_allocator, double* paramters) {
-    curandGenerateNormalDouble(generator, d_vec, num_keys, paramters[0], paramters[1]);
+                                    CachingDeviceAllocator& g_allocator, double* parameters) {
+    curandGenerateNormalDouble(generator, d_vec, num_keys, parameters[0], parameters[1]);
     sort_keys(d_vec, num_keys, g_allocator, true);
 }
 void generateSortedDecNormalDoubles(double* d_vec, uint num_keys, curandGenerator_t generator,
-                                    CachingDeviceAllocator& g_allocator, double* paramters) {
-    curandGenerateNormalDouble(generator, d_vec, num_keys, paramters[0], paramters[1]);
+                                    CachingDeviceAllocator& g_allocator, double* parameters) {
+    curandGenerateNormalDouble(generator, d_vec, num_keys, parameters[0], parameters[1]);
     sort_keys(d_vec, num_keys, g_allocator, false);
 }
 // 对数正态分布
 void generateLogNormalDoubles(double* d_vec, uint num_keys, curandGenerator_t generator,
-                              CachingDeviceAllocator& g_allocator, double* paramters) {
-    curandGenerateLogNormalDouble(generator, d_vec, num_keys, paramters[0], paramters[1]);
+                              CachingDeviceAllocator& g_allocator, double* parameters) {
+    curandGenerateLogNormalDouble(generator, d_vec, num_keys, parameters[0], parameters[1]);
 }
 void generateSortedIncLogNormalDoubles(double* d_vec, uint num_keys, curandGenerator_t generator,
-                                       CachingDeviceAllocator& g_allocator, double* paramters) {
-    curandGenerateLogNormalDouble(generator, d_vec, num_keys, paramters[0], paramters[1]);
+                                       CachingDeviceAllocator& g_allocator, double* parameters) {
+    curandGenerateLogNormalDouble(generator, d_vec, num_keys, parameters[0], parameters[1]);
     sort_keys(d_vec, num_keys, g_allocator, true);
 }
 void generateSortedDecLogNormalDoubles(double* d_vec, uint num_keys, curandGenerator_t generator,
-                                       CachingDeviceAllocator& g_allocator, double* paramters) {
-    curandGenerateLogNormalDouble(generator, d_vec, num_keys, paramters[0], paramters[1]);
+                                       CachingDeviceAllocator& g_allocator, double* parameters) {
+    curandGenerateLogNormalDouble(generator, d_vec, num_keys, parameters[0], parameters[1]);
     sort_keys(d_vec, num_keys, g_allocator, false);
 }
 
@@ -319,8 +319,9 @@ void (*returnGenFunction(Distribution distribution, SortType sort))(KeyT*, uint,
     }
 }
 
-char* returnNameOfGenerators(DataType type, Distribution distribution, SortType sort) {
+char* returnNameOfGenerators(DataType type, Distribution distribution, SortType sort, double* parameters) {
     char* name = (char*)malloc(sizeof(char) * 200);
+    char buf[200];
     strcpy(name, "");
 
     if (sort == INC) strcat(name, "SORTED INC ");
@@ -340,6 +341,19 @@ char* returnNameOfGenerators(DataType type, Distribution distribution, SortType 
     if (type == LONG) strcat(name, "LONG_LONGS");
     if (type == FLOAT) strcat(name, "FLOATS");
     if (type == DOUBLE) strcat(name, "DOUBLES");
+
+    if (distribution == POISSON) {
+        snprintf(buf, 200, " (lambda: %.2e)  ", parameters[0]);
+        strcat(name, buf);
+    }
+    if (distribution == NORMAL) {
+        snprintf(buf, 200, " (mu: %.2e, sigma: %.2e)  ", parameters[0], parameters[1]);
+        strcat(name, buf);
+    }
+    if (distribution == LOG_NORMAL) {
+        snprintf(buf, 200, " (mu: %.2e, sigma: %.2e)  ", parameters[0], parameters[1]);
+        strcat(name, buf);
+    }
 
     return name;
 }
