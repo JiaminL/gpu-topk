@@ -66,8 +66,8 @@
         algorithmsToRun[0] = (NEED_PRINT_DIFF) ? 1 : 0; \
         algorithmsToRun[1] = 0;                         \
         algorithmsToRun[2] = 0;                         \
-        algorithmsToRun[3] = 1;                         \
-        algorithmsToRun[4] = 0;                         \
+        algorithmsToRun[3] = 0;                         \
+        algorithmsToRun[4] = 1;                         \
     }
 
 using namespace std;
@@ -126,10 +126,10 @@ void compareAlgorithms(uint size, uint k, uint numTests, uint* algorithmsToTest,
     double avg_topk_rate[NUMBEROFALGORITHMS];   // 所有 numTests 个测试结果中正确 top-k 的比例均值
     fill_n(total_topk_times, NUMBEROFALGORITHMS, 0);
 
-    uint tolerance = 2;                                             // 评价指标容忍度
+    uint tolerance = 2;                                                     // 评价指标容忍度
     long double weight = ((long double)(tolerance * k * 2 - k) * k) / 2.0;  // 评价指标标准化权重
-    long long int sum_noWeight_analyze_1[NUMBEROFALGORITHMS];         // 所有 numTests 个无权评价指标之和
-    long double avg_analyze_1[NUMBEROFALGORITHMS];                  // 所有 numTests 个有权评价指标的均值
+    long long int sum_noWeight_analyze_1[NUMBEROFALGORITHMS];               // 所有 numTests 个无权评价指标之和
+    long double avg_analyze_1[NUMBEROFALGORITHMS];                          // 所有 numTests 个有权评价指标的均值
     for (int i = 0; i < NUMBEROFALGORITHMS; i++) sum_noWeight_analyze_1[i] = 0;
 
     bool res_error[NUMBEROFALGORITHMS];  // 结果中出现了原数据中没有的数，或者出现次数大于原数据中出现的次数，判定该算法出错
@@ -337,7 +337,7 @@ void compareAlgorithms(uint size, uint k, uint numTests, uint* algorithmsToTest,
 }
 
 template <typename KeyT>
-void runTests(uint k, uint startPower, uint stopPower, uint testCount, double* parameter,
+void runTests(uint k, uint* k_log, uint startPower, uint stopPower, uint testCount, double* parameter,
               DataType type, Distribution distribution, SortType sort) {
     // Algorithms To Run
     uint algorithmsToRun[NUMBEROFALGORITHMS];
@@ -346,29 +346,36 @@ void runTests(uint k, uint startPower, uint stopPower, uint testCount, double* p
     // 获得对应的生成随机数的函数
     typedef void (*ptrToGeneratingFunction)(KeyT*, uint, curandGenerator_t, CachingDeviceAllocator&, double*);
     ptrToGeneratingFunction generateFunc = (ptrToGeneratingFunction)returnGenFunction<KeyT>(distribution, sort);
-    char* generateName = returnNameOfGenerators(type, distribution, sort);
+    char* generateName = returnNameOfGenerators(type, distribution, sort, parameter);
     bool genNeedSort = (sort != NO);
 
     for (uint power = startPower; power <= stopPower; power++) {
         uint size = 1 << power;
-        printf("NOW STARTING A NEW TOP-K [size: 2^%u (%u), k: %d]\n", power, size, k);
-        // compareAlgorithms<KeyT>(size, k, testCount, algorithmsToRun, 0);
-        // compareAlgorithms<KeyT>(size, k, testCount, algorithmsToRun, parameter, generateName, genNeedSort);
-        compareAlgorithms<KeyT, ptrToGeneratingFunction>(size, k, testCount, algorithmsToRun, parameter, generateName, generateFunc, genNeedSort);
+        if (k != (~0)) {
+            printf("NOW STARTING A NEW TOP-K [size: 2^%u (%u), k: %d]\n", power, size, k);
+            compareAlgorithms<KeyT, ptrToGeneratingFunction>(size, k, testCount, algorithmsToRun, parameter, generateName, generateFunc, genNeedSort);
+        } else {
+            for (uint log = k_log[0]; log <= k_log[1]; log++) {
+                k = 1 << log;
+                printf("NOW STARTING A NEW TOP-K [size: 2^%u (%u), k: %d]\n", power, size, k);
+                compareAlgorithms<KeyT, ptrToGeneratingFunction>(size, k, testCount, algorithmsToRun, parameter, generateName, generateFunc, genNeedSort);
+            }
+        }
     }
 
     free(generateName);
 }
 
 void getParameters(int argc, char** argv,
-                   uint& u_k, uint& u_start_power, uint& u_stop_power, uint& u_test_count, double* parameter,
+                   int& k, int* k_log, int& start_power, int& stop_power, int& test_count, double* parameter,
                    DataType& type, Distribution& distribution, SortType& sort) {
     const int max_4b_power = 29;
     const int max_8b_power = 28;
 
-    int k = -1, start_power = -1, stop_power = -1;
-    int k_log;
-    int test_count = 3;
+    k = -1;
+    start_power = stop_power = -1;
+    k_log[0] = k_log[1] = -1;
+    test_count = 3;
     parameter[0] = 0;
     parameter[1] = 1;
     type = UINT;
@@ -394,11 +401,12 @@ void getParameters(int argc, char** argv,
             {"sort", 1, NULL, 's'},
             {"startpower", 1, NULL, 'a'},
             {"stoppower", 1, NULL, 'b'},
-            {"klog", 1, NULL, 'l'},
+            {"klog1", 1, NULL, 'e'},
+            {"klog2", 1, NULL, 'f'},
             {NULL, 0, NULL, 0},
         };
     int ch;
-    while ((ch = getopt_long(argc, argv, "t:d:s:k:l:a:b:c:1:2:", long_options, NULL)) != -1) {
+    while ((ch = getopt_long(argc, argv, "t:d:s:k:e:f:a:b:c:1:2:", long_options, NULL)) != -1) {
         if (error != NO_ERROR) break;
         switch (ch) {
             case 't':  // type
@@ -442,12 +450,15 @@ void getParameters(int argc, char** argv,
                 if (k <= 0)
                     error = K_ERROR;
                 break;
-            case 'l':  // klog
-                k_log = atoi(optarg);
-                if (k_log < 0)
+            case 'e':  // klog0
+                k_log[0] = atoi(optarg);
+                if (k_log[0] < 0)
                     error = KLOG_ERROR;
-                else
-                    k = 1 << k_log;
+                break;
+            case 'f':  // klog1
+                k_log[1] = atoi(optarg);
+                if (k_log[1] < 0)
+                    error = KLOG_ERROR;
                 break;
             case 'c':  // test_count
                 test_count = atoi(optarg);
@@ -517,15 +528,26 @@ void getParameters(int argc, char** argv,
         cerr << "error: k log 值必须为非负整数\n";
         exit(1);
     }
-    if (k == -1) {
-        cerr << "error: 请输入 k 值，如: -k 32，或输入 log2(k)，如 --klog=5\n";
+    if (k == -1 && k_log[0] == -1 && k_log[1] == -1) {
+        cerr << "error: 请输入 k 值\n";
         exit(1);
     }
-    if (k == 0) {
-        cerr << "error: klog 值过大\n";
-        exit(1);
+    if (k_log[0] != -1 || k_log[1] != -1) {
+        if (k_log[0] == -1)
+            k_log[0] = k_log[1];
+        else if (k_log[1] == -1)
+            k_log[1] = k_log[0];
+        else {
+            int temp;
+            if (k_log[0] > k_log[1]) {
+                temp = k_log[0];
+                k_log[0] = k_log[1];
+                k_log[1] = temp;
+            }
+        }
+        k = -1;
     }
-    if (log2_32(k) + 1 > max_power) {
+    if ((k != -1 && log2_32(k) + 1 > max_power) || (k == -1 && k_log[1] + 1 > max_power)) {
         cerr << "error: k 值过大\n";
         exit(1);
     }
@@ -547,7 +569,7 @@ void getParameters(int argc, char** argv,
     else if (stop_power == -1)
         stop_power = start_power;
     if (start_power != stop_power) {
-        if (start_power <= log2_32(k)) {
+        if ((k != -1 && start_power <= log2_32(k)) || (k == -1 && start_power <= k_log[1])) {
             cerr << "error: 2^startpower 必须大于 k\n";
             exit(1);
         }
@@ -556,7 +578,7 @@ void getParameters(int argc, char** argv,
             exit(1);
         }
     } else {  // start_power == stop_power
-        if (start_power <= log2_32(k)) {
+        if ((k != -1 && start_power <= log2_32(k)) || (k == -1 && start_power <= k_log[1])) {
             cerr << "error: power=" << start_power << ", 2^power 必须大于 k\n";
             exit(1);
         } else if (start_power > max_power) {
@@ -566,7 +588,7 @@ void getParameters(int argc, char** argv,
     }
 
     if (start_power > stop_power) {
-        if (stop_power <= log2_32(k))
+        if ((k != -1 && stop_power <= log2_32(k)) || (k == -1 && stop_power <= k_log[1]))
             cerr << "error: 2^stoppower 必须大于 k\n";
         else
             cerr << "error: startpower 不应大于 stoppower\n";
@@ -586,40 +608,36 @@ void getParameters(int argc, char** argv,
                 exit(1);
             }
     }
-
-    u_k = (uint)k;
-    u_start_power = (uint)start_power;
-    u_stop_power = (uint)stop_power;
-    u_test_count = (uint)test_count;
 }
 
 int main(int argc, char** argv) {
-    uint k, startPower, stopPower, testCount;
+    int k, startPower, stopPower, testCount;
     double parameter[2];
+    int k_log[2];
     DataType type;
     Distribution distribution;
     SortType sort;
-    getParameters(argc, argv, k, startPower, stopPower, testCount, parameter, type, distribution, sort);
+    getParameters(argc, argv, k, k_log, startPower, stopPower, testCount, parameter, type, distribution, sort);
 
     switch (type) {
         case UINT:
-            runTests<uint>(k, startPower, stopPower, testCount, parameter, type, distribution, sort);
+            runTests<uint>((uint)k, (uint*)k_log, (uint)startPower, (uint)stopPower, (uint)testCount, parameter, type, distribution, sort);
             break;
         case ULONG:
             // 不知道为什么，类型写成 unsigned long long 就编译报错
-            runTests<unsigned long>(k, startPower, stopPower, testCount, parameter, type, distribution, sort);
+            runTests<unsigned long>((uint)k, (uint*)k_log, (uint)startPower, (uint)stopPower, (uint)testCount, parameter, type, distribution, sort);
             break;
         case INT:
-            runTests<int>(k, startPower, stopPower, testCount, parameter, type, distribution, sort);
+            runTests<int>((uint)k, (uint*)k_log, (uint)startPower, (uint)stopPower, (uint)testCount, parameter, type, distribution, sort);
             break;
         case LONG:
-            runTests<long>(k, startPower, stopPower, testCount, parameter, type, distribution, sort);
+            runTests<long>((uint)k, (uint*)k_log, (uint)startPower, (uint)stopPower, (uint)testCount, parameter, type, distribution, sort);
             break;
         case FLOAT:
-            runTests<float>(k, startPower, stopPower, testCount, parameter, type, distribution, sort);
+            runTests<float>((uint)k, (uint*)k_log, (uint)startPower, (uint)stopPower, (uint)testCount, parameter, type, distribution, sort);
             break;
         case DOUBLE:
-            runTests<double>(k, startPower, stopPower, testCount, parameter, type, distribution, sort);
+            runTests<double>((uint)k, (uint*)k_log, (uint)startPower, (uint)stopPower, (uint)testCount, parameter, type, distribution, sort);
             break;
     }
 
